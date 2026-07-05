@@ -11,8 +11,17 @@
                         "debugger",
                         "sidePanel",
                         "downloads",
-                        "identity"
+                        "identity",
+                        "notifications"
                     ],
+    "commands":  {
+                     "_execute_action":  {
+                                             "suggested_key":  {
+                                                                   "default":  "Ctrl+Shift+A"
+                                                               },
+                                             "description":  "Abrir o painel lateral do Aurex"
+                                         }
+                 },
     "host_permissions":  [
                              "http://*/*",
                              "https://*/*"
@@ -32,8 +41,20 @@
                                 "all_frames":  true
                             }
                         ],
+    "icons":  {
+                  "16":  "icon16.png",
+                  "32":  "icon32.png",
+                  "48":  "icon48.png",
+                  "128":  "icon128.png"
+              },
     "action":  {
-                   "default_title":  "Abrir Aurex Web Agent"
+                   "default_title":  "Abrir Aurex Web Agent",
+                   "default_icon":  {
+                                        "16":  "icon16.png",
+                                        "32":  "icon32.png",
+                                        "48":  "icon48.png",
+                                        "128":  "icon128.png"
+                                    }
                },
     "side_panel":  {
                        "default_path":  "popup.html"

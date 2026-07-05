@@ -12,6 +12,15 @@ function getActiveTabId() {
   });
 }
 
+// Lê o modo de operação atual (plan / normal / autonomous) gravado pelo popup
+function getAurexModeFromStorage() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["aurex_mode"], (result) => {
+      resolve((result && result.aurex_mode) || "plan");
+    });
+  });
+}
+
 function ensureDebuggerAttached(tabId) {
   return new Promise((resolve, reject) => {
     if (attachedTabs.has(tabId)) {
@@ -146,6 +155,13 @@ async function handleDebuggerAction(action, payload) {
 
   const tab = await chrome.tabs.get(tabId);
   const origin = new URL(tab.url).origin;
+
+  // Modo Autônomo: concede permissões automaticamente (sem pedir ao usuário)
+  const mode = await getAurexModeFromStorage();
+  if (mode === "autonomous") {
+    await PermissionManager.grantPermission(origin);
+  }
+
   const isAllowed = await PermissionManager.requirePermission(tabId, origin);
   if (!isAllowed) {
     throw new Error(`PERMISSÃO RECUSADA: ${origin}.`);
@@ -249,6 +265,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   } else if (request.type === "recorder_event") {
     WorkflowRecorder.recordEvent(request.event);
+  }
+
+  // Revogar permissão de uma origem aprovada (a partir das Configurações)
+  if (request.type === "revoke_permission") {
+    PermissionManager.revokePermission(request.origin).then(() => {
+      sendResponse({ success: true });
+    });
+    return true;
   }
 
   // Comandos de Permissão

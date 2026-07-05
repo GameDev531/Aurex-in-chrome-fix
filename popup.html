@@ -25,17 +25,17 @@
           </button>
         </div>
         <button class="new-chat-btn" id="new-chat-btn">
-          <i class="fa-solid fa-plus"></i> Novo Chat
+          <i class="fa-solid fa-plus"></i> <span data-i18n="sidebar.newChat">Novo Chat</span>
         </button>
       </div>
-      
+
       <div class="search-container">
         <i class="fa-solid fa-search search-icon"></i>
-        <input type="text" id="chat-search" class="search-input" placeholder="Pesquisar chats...">
+        <input type="text" id="chat-search" class="search-input" data-i18n-ph="sidebar.searchPlaceholder" placeholder="Pesquisar chats...">
       </div>
 
       <div class="history-section">
-        <div class="history-label">Recentes</div>
+        <div class="history-label" data-i18n="sidebar.recents">Recentes</div>
         <ul class="chat-list" id="chat-list">
           <!-- Chat items generated dynamically -->
         </ul>
@@ -46,17 +46,38 @@
           <div class="avatar">G</div>
           <span class="username" id="sidebar-username">Giovanni</span>
         </div>
+        <button id="open-settings" class="icon-btn" data-i18n-title="sidebar.settings" title="Configurações">
+          <i class="fa-solid fa-gear"></i>
+        </button>
       </div>
     </aside>
 
     <!-- Main Content -->
     <main class="main-content">
       <header class="top-header">
-        <button id="toggle-sidebar" class="icon-btn" title="Alternar Barra Lateral">
+        <button id="toggle-sidebar" class="icon-btn" data-i18n-title="header.toggleSidebar" title="Alternar Barra Lateral">
           <i class="fa-solid fa-bars"></i>
         </button>
-        <div class="model-selector">
-          AurexAI Adaptive
+        <div class="mode-selector" id="mode-selector">
+          <button class="mode-selector-btn" id="mode-selector-btn">
+            <i class="fa-solid fa-compass-drafting mode-icon"></i>
+            <span id="mode-current-label" data-i18n="mode.plan">Plano</span>
+            <i class="fa-solid fa-chevron-down mode-caret"></i>
+          </button>
+          <div class="mode-menu hidden" id="mode-menu">
+            <button class="mode-option active" data-mode="plan">
+              <div class="mode-option-title"><i class="fa-solid fa-compass-drafting"></i> <span data-i18n="mode.plan">Plano</span></div>
+              <div class="mode-option-desc" data-i18n="mode.plan.desc">Pergunta antes de agir e cria um plano</div>
+            </button>
+            <button class="mode-option" data-mode="normal">
+              <div class="mode-option-title"><i class="fa-solid fa-bolt"></i> <span data-i18n="mode.normal">Normal</span></div>
+              <div class="mode-option-desc" data-i18n="mode.normal.desc">Age direto, sem criar plano</div>
+            </button>
+            <button class="mode-option" data-mode="autonomous">
+              <div class="mode-option-title"><i class="fa-solid fa-robot"></i> <span data-i18n="mode.autonomous">Autônomo</span></div>
+              <div class="mode-option-desc" data-i18n="mode.autonomous.desc">Age sozinho, sem pedir permissão</div>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -68,16 +89,17 @@
         
         <div class="input-container center-input">
           <div class="input-wrapper">
-            <textarea id="main-input" placeholder="Como posso ajudar você hoje no navegador?" rows="1"></textarea>
+            <textarea id="main-input" data-i18n-ph="welcome.placeholder" placeholder="Como posso ajudar você hoje no navegador?" rows="1"></textarea>
             <button id="send-btn" class="send-btn"><i class="fa-solid fa-arrow-up"></i></button>
           </div>
-          
+
           <div class="skills-container">
-            <button class="skill-btn"><i class="fa-solid fa-code"></i> Analisar DOM</button>
-            <button class="skill-btn"><i class="fa-solid fa-pen-to-square"></i> Preencher Formulário</button>
-            <button class="skill-btn"><i class="fa-solid fa-calendar-check"></i> Agendar Tarefa</button>
-            <button class="skill-btn"><i class="fa-solid fa-camera"></i> Tirar Print</button>
-            <button class="skill-btn" id="btn-more-skills"><i class="fa-solid fa-plus"></i> Mais skills...</button>
+            <button class="skill-btn"><i class="fa-solid fa-code"></i> <span data-i18n="skill.analyzeDom">Analisar DOM</span></button>
+            <button class="skill-btn"><i class="fa-solid fa-pen-to-square"></i> <span data-i18n="skill.fillForm">Preencher Formulário</span></button>
+            <button class="skill-btn"><i class="fa-solid fa-calendar-check"></i> <span data-i18n="skill.scheduleTask">Agendar Tarefa</span></button>
+            <button class="skill-btn"><i class="fa-solid fa-camera"></i> <span data-i18n="skill.screenshot">Tirar Print</span></button>
+            <button class="skill-btn" id="btn-teach-aurex"><i class="fa-solid fa-graduation-cap"></i> <span data-i18n="skill.teach">Ensinar Aurex</span></button>
+            <button class="skill-btn" id="btn-more-skills"><i class="fa-solid fa-plus"></i> <span data-i18n="skill.more">Mais skills...</span></button>
           </div>
         </div>
       </div>
@@ -90,7 +112,7 @@
         
         <div class="chat-input-area">
           <div class="input-wrapper">
-            <textarea id="chat-bottom-input" placeholder="Digite sua mensagem para o Aurex..." rows="1"></textarea>
+            <textarea id="chat-bottom-input" data-i18n-ph="chat.placeholder" placeholder="Digite sua mensagem para o Aurex..." rows="1"></textarea>
             <button id="chat-send-btn" class="send-btn"><i class="fa-solid fa-arrow-up"></i></button>
           </div>
         </div>
@@ -100,14 +122,14 @@
       <div class="skills-panel hidden" id="skills-panel">
         <div class="skills-header">
           <div style="display: flex; align-items: center; justify-content: space-between;">
-            <h2 style="font-size: 16px; font-weight: 600; color: var(--text-accent);">Habilidades (Skills)</h2>
-            <button id="close-skills" class="icon-btn" title="Fechar">
+            <h2 style="font-size: 16px; font-weight: 600; color: var(--text-accent);" data-i18n="skills.title">Habilidades (Skills)</h2>
+            <button id="close-skills" class="icon-btn" data-i18n-title="common.close" title="Fechar">
               <i class="fa-solid fa-xmark"></i>
             </button>
           </div>
           <div class="skills-tabs">
-            <button class="skills-tab active" id="tab-minhas-skills">Minhas Skills</button>
-            <button class="skills-tab" id="tab-lojinha">Lojinha</button>
+            <button class="skills-tab active" id="tab-minhas-skills" data-i18n="skills.tabMine">Minhas Skills</button>
+            <button class="skills-tab" id="tab-lojinha" data-i18n="skills.tabStore">Lojinha</button>
           </div>
         </div>
 
@@ -153,11 +175,185 @@
         </div>
       </div>
 
+      <!-- Settings Panel (Hidden initially) -->
+      <div class="settings-panel hidden" id="settings-panel">
+        <div class="settings-header">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <h2 data-i18n="settings.title">Configurações</h2>
+            <button id="close-settings" class="icon-btn" data-i18n-title="common.close" title="Fechar">
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+          <div class="settings-tabs">
+            <button class="settings-tab active" data-settings-tab="general" data-i18n="settings.tab.general">Geral</button>
+            <button class="settings-tab" data-settings-tab="personality" data-i18n="settings.tab.personality">Personalidade</button>
+            <button class="settings-tab" data-settings-tab="shortcuts" data-i18n="settings.tab.shortcuts">Atalhos</button>
+            <button class="settings-tab" data-settings-tab="file" data-i18n="settings.tab.file">Arquivo</button>
+            <button class="settings-tab" data-settings-tab="keyboard" data-i18n="settings.tab.keyboard">Atalho de teclado</button>
+            <button class="settings-tab" data-settings-tab="account" data-i18n="settings.tab.account">Conta</button>
+          </div>
+        </div>
+
+        <div class="settings-body">
+          <!-- GERAL -->
+          <div class="settings-section active" id="settings-general">
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.server">Servidor</div>
+              <div class="setting-desc" data-i18n="settings.server.desc">Endereço do servidor que processa as conversas. Use o seu servidor local se estiver rodando no terminal.</div>
+              <input type="text" id="server-url-input" class="setting-select" data-i18n-ph="settings.server.urlPh" placeholder="http://localhost:3000/v1">
+              <label class="setting-toggle-row" style="margin-top:12px;">
+                <div>
+                  <div class="setting-toggle-label" data-i18n="settings.server.local">Servidor local (sem login)</div>
+                  <div class="setting-toggle-sub" data-i18n="settings.server.localDesc">Não tenta fazer login OAuth — envia direto ao servidor</div>
+                </div>
+                <span class="switch"><input type="checkbox" id="toggle-local-server"><span class="slider"></span></span>
+              </label>
+              <div class="setting-toggle-label" style="margin-top:12px;" data-i18n="settings.server.key">Chave da API (opcional)</div>
+              <input type="text" id="api-key-input" class="setting-select" style="margin-top:6px;" data-i18n-ph="settings.server.keyPh" placeholder="Cole sua chave se o servidor exigir">
+              <button class="action-btn primary" id="save-server" style="margin-top:12px;" data-i18n="settings.server.save">Salvar servidor</button>
+            </div>
+
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.language">Idioma</div>
+              <div class="setting-desc" data-i18n="settings.language.desc">Muda o idioma da interface e das respostas do Aurex</div>
+              <select id="language-select" class="setting-select"></select>
+            </div>
+
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.notifications">Notificações</div>
+              <div class="setting-desc" data-i18n="settings.notifications.desc">Receba notificações quando as tarefas forem concluídas ou precisarem da sua ação</div>
+              <label class="setting-toggle-row">
+                <div>
+                  <div class="setting-toggle-label" data-i18n="settings.notifications.toggle">Notificações de conclusão de tarefa</div>
+                  <div class="setting-toggle-sub" data-i18n="settings.notifications.toggleDesc">Você receberá notificações quando as tarefas terminarem</div>
+                </div>
+                <span class="switch"><input type="checkbox" id="toggle-notifications"><span class="slider"></span></span>
+              </label>
+            </div>
+
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.mic">Microfone</div>
+              <div class="setting-desc" data-i18n="settings.mic.desc">Habilite o acesso ao microfone para usar a funcionalidade de conversão de fala em texto do seu navegador para narração por voz durante a gravação do fluxo de trabalho</div>
+              <label class="setting-toggle-row">
+                <div>
+                  <div class="setting-toggle-label" data-i18n="settings.mic.toggle">Permitir acesso ao microfone</div>
+                </div>
+                <span class="switch"><input type="checkbox" id="toggle-microphone"><span class="slider"></span></span>
+              </label>
+            </div>
+
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.sites">Seus sites aprovados</div>
+              <div class="setting-desc" data-i18n="settings.sites.desc">Você permitiu que o Aurex execute todas as ações (navegar, clicar, digitar) nestes sites.</div>
+              <div id="approved-sites-list" class="approved-sites-list"></div>
+            </div>
+          </div>
+
+          <!-- PERSONALIDADE -->
+          <div class="settings-section" id="settings-personality">
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.tab.personality">Personalidade</div>
+              <div class="setting-desc" data-i18n="settings.personality.desc">Mude o comportamento e o tom do Aurex. Estas instruções são aplicadas em todas as conversas.</div>
+              <textarea id="personality-input" class="setting-textarea" rows="6" data-i18n-ph="settings.personality.placeholder" placeholder="Ex: Seja conciso e direto, use um tom profissional e evite emojis..."></textarea>
+              <button class="action-btn primary" id="save-personality" data-i18n="common.save">Salvar</button>
+            </div>
+          </div>
+
+          <!-- ATALHOS -->
+          <div class="settings-section" id="settings-shortcuts">
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.tab.shortcuts">Atalhos</div>
+              <div class="setting-desc" data-i18n="settings.shortcuts.desc">Digite / no chat para usar atalhos ou executá-los de forma programada</div>
+              <button class="action-btn primary" id="btn-create-shortcut"><i class="fa-solid fa-plus"></i> <span data-i18n="settings.shortcuts.create">Criar atalho</span></button>
+              <div class="create-shortcut-form hidden" id="create-shortcut-form">
+                <input type="text" id="shortcut-name" data-i18n-ph="settings.shortcuts.namePlaceholder" placeholder="Nome do atalho (ex: resumir)">
+                <textarea id="shortcut-prompt" rows="3" data-i18n-ph="settings.shortcuts.promptPlaceholder" placeholder="O que o Aurex deve fazer..."></textarea>
+                <div style="display:flex; gap:8px; margin-top:8px;">
+                  <button class="action-btn primary" id="save-shortcut" data-i18n="common.save">Salvar</button>
+                  <button class="action-btn" id="cancel-shortcut" data-i18n="common.cancel">Cancelar</button>
+                </div>
+              </div>
+              <div id="shortcuts-list" class="shortcuts-list"></div>
+            </div>
+          </div>
+
+          <!-- ARQUIVO -->
+          <div class="settings-section" id="settings-file">
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.file.title">Formato do arquivo de saída</div>
+              <div class="setting-desc" data-i18n="settings.file.desc">O Aurex salva resumos e relatórios neste formato na pasta Downloads</div>
+              <select id="file-format-select" class="setting-select">
+                <option value="md">Markdown (.md)</option>
+                <option value="txt">Texto (.txt)</option>
+                <option value="html">HTML (.html)</option>
+                <option value="csv">CSV (.csv)</option>
+                <option value="json">JSON (.json)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- ATALHO DE TECLADO -->
+          <div class="settings-section" id="settings-keyboard">
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.keyboard.title">Atalho de teclado</div>
+              <div class="setting-desc" data-i18n="settings.keyboard.desc">Configure o atalho de teclado usado para abrir o Aurex no Chrome.</div>
+              <div class="keyboard-row">
+                <div>
+                  <div class="setting-toggle-label" data-i18n="settings.keyboard.openPanel">Abrir painel lateral</div>
+                  <div class="setting-toggle-sub" id="keyboard-current" data-i18n="settings.keyboard.none">Nenhum atalho configurado</div>
+                </div>
+                <button class="action-btn" id="configure-shortcut" data-i18n="settings.keyboard.configure">Configurar</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- CONTA -->
+          <div class="settings-section" id="settings-account">
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.tab.account">Conta</div>
+              <div class="setting-desc" data-i18n="settings.account.desc">Desconecte sua conta Aurex deste navegador</div>
+              <button class="action-btn danger" id="btn-logout"><i class="fa-solid fa-arrow-right-from-bracket"></i> <span data-i18n="settings.account.logout">Sair da conta</span></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Teach Aurex Panel (Hidden initially) -->
+      <div class="settings-panel hidden" id="teach-panel">
+        <div class="settings-header">
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <h2 data-i18n="skill.teach">Ensinar Aurex</h2>
+            <button id="close-teach" class="icon-btn" data-i18n-title="common.close" title="Fechar">
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+        </div>
+        <div class="settings-body">
+          <div class="teach-hero">
+            <div class="teach-hero-icon"><i class="fa-solid fa-graduation-cap"></i></div>
+            <h3 data-i18n="teach.title">Ensine seu fluxo de trabalho ao Aurex</h3>
+            <p data-i18n="teach.desc">Ative seu microfone para narrar enquanto demonstra o fluxo de trabalho. Aurex aprenderá o processo e o repetirá para você.</p>
+          </div>
+          <div class="teach-controls">
+            <input type="text" id="teach-name" data-i18n-ph="teach.namePlaceholder" placeholder="Nome do fluxo (ex: Login no painel)">
+            <button class="action-btn primary teach-record-btn" id="teach-toggle">
+              <i class="fa-solid fa-circle"></i> <span id="teach-toggle-label" data-i18n="teach.start">Iniciar gravação</span>
+            </button>
+            <div class="teach-status" id="teach-status"></div>
+            <div class="teach-transcript" id="teach-transcript"></div>
+          </div>
+        </div>
+      </div>
+
     </main>
   </div>
 
+  <!-- Menu de atalhos (aparece ao digitar / no chat) -->
+  <div class="slash-menu hidden" id="slash-menu"></div>
+
   <script src="dompurify.min.js"></script>
   <script src="gsap.min.js"></script>
+  <script src="i18n.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
