@@ -1,6 +1,17 @@
-var AUREX_API_BASE_URL = (localStorage.getItem('aurex_api_base_url') || "https://api.aurexai.com/v1").replace(/\/+$/, '');
-var AUREX_API_URL = AUREX_API_BASE_URL + "/chat/completions";
 var AUREX_AUTH_STORAGE_KEY = "aurex_auth_tokens";
+
+// Base da API: aceita tanto "http://127.0.0.1:3030" quanto ".../v1".
+// Se o usuário não incluir o sufixo de versão, aplicamos "/v1" automaticamente.
+function getAurexApiBase() {
+  var base = (localStorage.getItem('aurex_api_base_url') || "https://api.aurexai.com/v1").trim().replace(/\/+$/, '');
+  if (!/\/v\d+$/.test(base)) base += "/v1";
+  return base;
+}
+
+// Base dos endpoints de autenticação (sem o /v1)
+function getAurexAuthBase() {
+  return getAurexApiBase().replace(/\/v\d+$/, '');
+}
 
 function storageGet(key) {
   return new Promise((resolve) => chrome.storage.local.get([key], (result) => resolve(result[key] || null)));
@@ -12,6 +23,102 @@ function storageSet(values) {
 
 function storageRemove(key) {
   return new Promise((resolve) => chrome.storage.local.remove([key], resolve));
+}
+
+// ========== IDENTIDADE DO USUÁRIO (nome de quem fez login) ==========
+// O nome NUNCA é fixo: vem do onboarding/login e alimenta a saudação,
+// a sidebar e o system prompt ("Boa noite, Paulo").
+var _aurexUserName = '';
+
+async function loadAurexIdentity() {
+  var stored = await new Promise(function (resolve) {
+    chrome.storage.local.get(['aurex_user_name', AUREX_AUTH_STORAGE_KEY], resolve);
+  });
+  var tokens = stored[AUREX_AUTH_STORAGE_KEY];
+  _aurexUserName = (stored.aurex_user_name || (tokens && tokens.user && tokens.user.name) || '').trim();
+  return { name: _aurexUserName, loggedIn: !!(tokens && tokens.accessToken) };
+}
+
+function applyIdentityToUI() {
+  var usernameEl = document.getElementById('sidebar-username');
+  var avatarEl = document.getElementById('sidebar-avatar');
+  var display = _aurexUserName || 'Aurex';
+  if (usernameEl) usernameEl.textContent = display;
+  if (avatarEl) avatarEl.textContent = display.charAt(0).toUpperCase();
+  setDynamicGreeting();
+}
+
+// ========== ONBOARDING (login ▸ nome ▸ aviso beta) ==========
+async function setupOnboarding() {
+  var overlay = document.getElementById('onboarding-overlay');
+  if (!overlay) return;
+  var stepLogin = document.getElementById('onboarding-step-login');
+  var stepName = document.getElementById('onboarding-step-name');
+  var loginBtn = document.getElementById('onboarding-login-btn');
+  var localBtn = document.getElementById('onboarding-local-btn');
+  var nameBtn = document.getElementById('onboarding-name-btn');
+  var nameInput = document.getElementById('onboarding-name-input');
+
+  function showStep(step) {
+    overlay.classList.remove('hidden');
+    stepLogin.classList.toggle('hidden', step !== 'login');
+    stepName.classList.toggle('hidden', step !== 'name');
+    if (step === 'name' && nameInput) setTimeout(function () { nameInput.focus(); }, 60);
+  }
+
+  async function refreshOnboardingState() {
+    var identity = await loadAurexIdentity();
+    var localMode = localStorage.getItem('aurex_local_mode') === 'true';
+    applyIdentityToUI();
+    if (!identity.loggedIn && !localMode) {
+      showStep('login');
+    } else if (!identity.name) {
+      showStep('name');
+    } else {
+      overlay.classList.add('hidden');
+    }
+  }
+
+  if (loginBtn) loginBtn.addEventListener('click', function () { openLoginPage(); });
+  if (localBtn) localBtn.addEventListener('click', function () {
+    localStorage.setItem('aurex_local_mode', 'true');
+    var localToggle = document.getElementById('toggle-local-server');
+    if (localToggle) localToggle.checked = true;
+    showStep('name');
+  });
+
+  function confirmName() {
+    var name = (nameInput && nameInput.value || '').trim();
+    if (!name) {
+      if (nameInput) { nameInput.style.borderColor = 'var(--accent-red)'; nameInput.focus(); }
+      return;
+    }
+    chrome.storage.local.set({ aurex_user_name: name, aurex_onboarded: true }, function () {
+      _aurexUserName = name;
+      applyIdentityToUI();
+      overlay.classList.add('hidden');
+    });
+  }
+  if (nameBtn) nameBtn.addEventListener('click', confirmName);
+  if (nameInput) {
+    nameInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') confirmName(); });
+    nameInput.addEventListener('input', function () { nameInput.style.borderColor = ''; });
+  }
+
+  // Permite que outras partes da UI (ex: salvar servidor local) reavaliem o gate
+  window._aurexRefreshOnboarding = refreshOnboardingState;
+
+  // Login concluído em outra aba (login.html) → atualiza na hora
+  try {
+    chrome.storage.onChanged.addListener(function (changes, area) {
+      if (area !== 'local') return;
+      if (changes.aurex_user_name || changes[AUREX_AUTH_STORAGE_KEY]) {
+        refreshOnboardingState();
+      }
+    });
+  } catch (e) { /* ignore */ }
+
+  await refreshOnboardingState();
 }
 
 function base64UrlFromBytes(bytes) {
@@ -57,7 +164,7 @@ async function loginAurexChrome() {
   var pkce = await createPkcePair();
   var state = randomBase64Url(24);
   var redirectUri = chrome.identity.getRedirectURL("callback");
-  var loginUrl = new URL(AUREX_API_BASE_URL.replace(/\/v1\/?$/, "") + "/auth/login");
+  var loginUrl = new URL(getAurexAuthBase() + "/auth/login");
   loginUrl.searchParams.set("state", state);
   loginUrl.searchParams.set("code_challenge", pkce.challenge);
   loginUrl.searchParams.set("redirect_uri", redirectUri);
@@ -68,7 +175,7 @@ async function loginAurexChrome() {
   var returnedState = callback.searchParams.get("state");
   if (!code || returnedState !== state) throw new Error("Aurex login state mismatch.");
 
-  var response = await fetch(AUREX_API_BASE_URL.replace(/\/v1\/?$/, "") + "/auth/token", {
+  var response = await fetch(getAurexAuthBase() + "/auth/token", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code: code, code_verifier: pkce.verifier, redirect_uri: redirectUri })
@@ -88,7 +195,7 @@ async function loginAurexChrome() {
 
 async function refreshAurexAccessToken(tokens) {
   if (!tokens || !tokens.refreshToken) return null;
-  var response = await fetch(AUREX_API_BASE_URL.replace(/\/v1\/?$/, "") + "/auth/refresh", {
+  var response = await fetch(getAurexAuthBase() + "/auth/refresh", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ refreshToken: tokens.refreshToken })
@@ -121,7 +228,7 @@ async function getAurexAccessToken() {
 async function logoutAurexChrome() {
   var tokens = await storageGet(AUREX_AUTH_STORAGE_KEY);
   if (tokens?.refreshToken) {
-    await fetch(AUREX_API_BASE_URL.replace(/\/v1\/?$/, "") + "/auth/logout", {
+    await fetch(getAurexAuthBase() + "/auth/logout", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refreshToken: tokens.refreshToken })
@@ -157,7 +264,7 @@ var SYSTEM_PROMPT = "Voc\u00ea \u00e9 o Aurex, um Web Agent inteligente integrad
 "4. Use listas para itens comparaveis, passos, achados e prioridades. Cada item deve ter uma ideia central clara.\n" +
 "5. Use **negrito** apenas para conclusoes, riscos, prioridades e rotulos importantes.\n" +
 "6. Use separadores horizontais ('---') apenas em respostas longas ou relatorios; nao polua respostas simples.\n" +
-"7. NUNCA use tabelas Markdown ('|---|'). Para comparacoes, use secoes rotuladas ou listas curtas.\n" +
+"7. Tabelas Markdown ('| A | B |' com linha separadora '|---|') SAO permitidas e renderizadas com estilo proprio — use-as para comparar dados estruturados. Links Markdown no formato [texto](https://url) tambem sao renderizados como links clicaveis; use-os ao citar fontes ou paginas.\n" +
 "8. Nao repita a mesma informacao em texto e lista. Nao invente secoes vazias.\n\n" +
 "ESTRUTURA POR TIPO DE RESPOSTA:\n" +
 "- Pergunta simples: resposta direta primeiro; depois detalhes curtos somente se ajudarem.\n" +
@@ -363,8 +470,41 @@ const STORE_SKILLS_CATALOG = [
   { id: 'store_dataset_curator', category: 'Dados', level: 'Pro', icon: 'fa-database', name: 'Curador de Dataset', desc: 'Planeja coleta, limpeza, rotulos e controle de qualidade.', inst: 'Atue como curador de datasets. Considere licenca aparente, schema, qualidade, duplicatas, vies, rotulagem, validacao, splits, versionamento e data card. Entregue checklist e pipeline reproduzivel quando o pedido envolver dataset.' },
   { id: 'store_technical_writer', category: 'Documentacao', level: 'Pro', icon: 'fa-file-lines', name: 'Redator Tecnico', desc: 'Transforma achados em guias, READMEs e handoffs.', inst: 'Escreva documentacao tecnica objetiva a partir do material coletado. Estruture objetivo, contexto, pre-requisitos, passos, exemplos, validacao e troubleshooting. Preserve incertezas.' },
   { id: 'store_security_review', category: 'Seguranca', level: 'Pro', icon: 'fa-shield-halved', name: 'Revisor de Seguranca Web', desc: 'Procura sinais de risco em fluxos, permissoes e inputs.', inst: 'Revise superfícies web com mentalidade defensiva. Priorize autenticacao aparente, permissoes, inputs, upload, links externos, spoofing de UI e acoes sensiveis. Relate risco, impacto, evidencias observadas e mitigacao sem executar exploracao destrutiva.' },
-  { id: 'store_exec_brief', category: 'Documentacao', level: 'Essencial', icon: 'fa-list-check', name: 'Brief Executivo', desc: 'Condensa pesquisa em decisoes e proximas acoes.', inst: 'Ao finalizar pesquisa ou analise, produza brief executivo com resumo, achados principais, decisoes recomendadas, riscos, perguntas abertas e proximas acoes priorizadas.' }
+  { id: 'store_exec_brief', category: 'Documentacao', level: 'Essencial', icon: 'fa-list-check', name: 'Brief Executivo', desc: 'Condensa pesquisa em decisoes e proximas acoes.', inst: 'Ao finalizar pesquisa ou analise, produza brief executivo com resumo, achados principais, decisoes recomendadas, riscos, perguntas abertas e proximas acoes priorizadas.' },
+  { id: 'store_price_hunter', category: 'Compras', level: 'Pro', icon: 'fa-tags', name: 'Comparador de Precos', desc: 'Compara precos do mesmo produto em varias lojas e aponta a melhor oferta.', inst: 'Quando o usuario pedir para comparar precos: abra as lojas relevantes em abas separadas com tab_manager, procure o mesmo produto em cada uma, registre preco, frete visivel e condicoes. Ao final, monte uma tabela Markdown com Loja | Preco | Observacoes, destaque a melhor oferta em negrito e inclua os links das paginas. NUNCA finalize compra ou checkout — apenas pesquise.' },
+  { id: 'store_page_translator', category: 'Pesquisa', level: 'Essencial', icon: 'fa-language', name: 'Tradutor de Paginas', desc: 'Le a pagina em outro idioma e entrega traducao organizada.', inst: 'Quando o usuario pedir traducao: leia o conteudo da pagina, traduza para o idioma da interface preservando a estrutura (titulos, listas), marque termos tecnicos sem traducao literal e sinalize trechos ambiguos. Para paginas longas, traduza por secoes priorizando o conteudo principal.' },
+  { id: 'store_job_scout', category: 'Produtividade', level: 'Pro', icon: 'fa-briefcase', name: 'Cacador de Vagas', desc: 'Varre paginas de vagas e organiza as oportunidades relevantes.', inst: 'Ao analisar sites de vagas: extraia titulo, empresa, local/remoto, faixa salarial quando visivel, requisitos-chave e link. Filtre pelo perfil que o usuario descrever, ordene por aderencia e entregue uma tabela Markdown com as melhores vagas. Ofereca salvar o resultado como arquivo na pasta Downloads.' },
+  { id: 'store_trip_planner', category: 'Produtividade', level: 'Essencial', icon: 'fa-plane', name: 'Planejador de Viagens', desc: 'Pesquisa voos, hospedagem e monta roteiro comparado.', inst: 'Para planejar viagens: pesquise opcoes de voo, hospedagem e atracoes em abas separadas, compare precos e horarios visiveis, e monte um roteiro dia a dia com estimativa de custos em tabela. Nunca efetue reservas ou pagamentos — apenas pesquise e organize as opcoes com links.' },
+  { id: 'store_news_digest', category: 'Pesquisa', level: 'Essencial', icon: 'fa-newspaper', name: 'Radar de Noticias', desc: 'Compila as noticias mais relevantes de um tema em um resumo unico.', inst: 'Quando o usuario pedir um panorama de noticias: pesquise o tema em fontes diferentes, compare as manchetes, identifique fatos confirmados por mais de uma fonte e separe rumores. Entregue um digest com topicos em ordem de relevancia, cada um com 1-2 frases e link da fonte.' },
+  { id: 'store_meeting_prep', category: 'Produtividade', level: 'Pro', icon: 'fa-user-tie', name: 'Preparador de Reunioes', desc: 'Pesquisa empresa/pessoa e gera briefing pre-reuniao.', inst: 'Antes de uma reuniao: pesquise a empresa ou pessoa indicada (site oficial, LinkedIn publico, noticias recentes), colete contexto de negocio, produtos e movimentos recentes, e gere um briefing com: quem e, o que faz, noticias recentes, possiveis pautas e 3 perguntas inteligentes para a conversa. Salve como arquivo se o usuario pedir.' }
 ];
+
+// Metadados de vitrine (slug estilo diretório, autor e downloads)
+const STORE_SKILL_META = {
+  store_qa_tester: { slug: 'qa-tester', downloads: '412K' },
+  store_resume: { slug: 'resumo-de-pagina', downloads: '1.2M' },
+  store_extract_links: { slug: 'extrair-links', downloads: '388K' },
+  store_explain_simple: { slug: 'modo-professor', downloads: '540K' },
+  store_detect_goal: { slug: 'detectar-objetivo', downloads: '176K' },
+  store_auto_click: { slug: 'navegacao-autonoma', downloads: '294K' },
+  store_find_info: { slug: 'achar-informacao', downloads: '221K' },
+  store_table_extract: { slug: 'extrair-tabela', downloads: '347K' },
+  store_accessibility: { slug: 'auditoria-a11y', downloads: '158K' },
+  store_form_guard: { slug: 'preenchimento-seguro', downloads: '263K' },
+  store_research_analyst: { slug: 'analista-de-pesquisa', downloads: '605K' },
+  store_competitor: { slug: 'benchmark-concorrentes', downloads: '199K' },
+  store_product_ux: { slug: 'revisor-de-ux', downloads: '243K' },
+  store_dataset_curator: { slug: 'curador-de-dataset', downloads: '87K' },
+  store_technical_writer: { slug: 'redator-tecnico', downloads: '312K' },
+  store_security_review: { slug: 'revisor-de-seguranca', downloads: '134K' },
+  store_exec_brief: { slug: 'brief-executivo', downloads: '451K' },
+  store_price_hunter: { slug: 'comparador-precos', downloads: '689K' },
+  store_page_translator: { slug: 'tradutor-de-paginas', downloads: '833K' },
+  store_job_scout: { slug: 'cacador-de-vagas', downloads: '502K' },
+  store_trip_planner: { slug: 'planejador-viagens', downloads: '377K' },
+  store_news_digest: { slug: 'radar-de-noticias', downloads: '296K' },
+  store_meeting_prep: { slug: 'preparador-reunioes', downloads: '148K' }
+};
 
 const STORE_SKILL_PRESENTATION = {
   store_qa_tester: { category: 'QA', level: 'Pro', icon: 'fa-bug' },
@@ -378,13 +518,17 @@ const STORE_SKILL_PRESENTATION = {
 };
 
 let activeStoreCategory = 'Todas';
+let storeSearchQuery = '';
 
 function getStoreSkillPresentation(skill) {
   return Object.assign({
     category: 'Geral',
     level: 'Essencial',
-    icon: 'fa-cube'
-  }, STORE_SKILL_PRESENTATION[skill.id] || {}, skill);
+    icon: 'fa-cube',
+    author: 'Aurex',
+    slug: (skill.id || '').replace(/^store_/, '').replace(/_/g, '-'),
+    downloads: '10K'
+  }, STORE_SKILL_PRESENTATION[skill.id] || {}, STORE_SKILL_META[skill.id] || {}, skill);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -397,6 +541,8 @@ document.addEventListener('DOMContentLoaded', () => {
   setupTeachPanel();
   setupTabSpeech();
   setupMotion();
+  setupTempChat();
+  setupOnboarding();
   // Esconde o menu de atalhos ao clicar fora ou perder o foco
   document.addEventListener('click', function (e) {
     var menu = document.getElementById('slash-menu');
@@ -616,8 +762,12 @@ function setupMotion() {
 // ========== GLOBAL CHAT PERSISTENCE ==========
 let savedChats = JSON.parse(localStorage.getItem('aurex_chats')) || [];
 let currentChatId = Date.now().toString();
+// Chat temporário: a conversa acontece normalmente, mas NUNCA é persistida
+// no histórico (aurex_chats). Alternado pelo botão no header.
+let isTempChat = false;
 
 function saveChats() {
+  if (isTempChat) return; // Chat temporário: não vai para o histórico
   let chatIndex = savedChats.findIndex(c => c.id === currentChatId);
   const firstUserMsg = chatHistory.find(m => m.role === 'user' && !m._ephemeral);
   const title = firstUserMsg ? (typeof firstUserMsg.content === 'string' ? firstUserMsg.content.substring(0, 35) : 'Chat').replace(/\n/g, ' ') + '...' : 'Novo Chat';
@@ -708,6 +858,7 @@ function renderSidebarChats() {
 function loadChat(id) {
   const chat = savedChats.find(c => c.id === id);
   if (!chat) return;
+  setTempChatState(false); // Abrir um chat salvo sai do modo temporário
   currentChatId = chat.id;
   chatHistory = chat.history;
   document.getElementById('messages-container').innerHTML = '';
@@ -726,19 +877,59 @@ function loadChat(id) {
 
 function setDynamicGreeting() {
   const greetingEl = document.getElementById('dynamic-greeting');
-  const usernameEl = document.getElementById('sidebar-username');
-  const username = usernameEl ? usernameEl.innerText : 'Aurex';
+  if (!greetingEl) return;
   const hour = new Date().getHours();
-  
-  let timeGreeting = "Bom dia";
-  if (hour >= 0 && hour < 6) timeGreeting = "Boa noite";
-  else if (hour >= 6 && hour < 12) timeGreeting = "Bom dia";
-  else if (hour >= 12 && hour < 18) timeGreeting = "Boa tarde";
-  else if (hour >= 18) timeGreeting = "Boa noite";
-  
-  if (greetingEl) {
-    greetingEl.innerText = `${timeGreeting}, ${username}!`;
-  }
+
+  let key = "greeting.morning";
+  if (hour < 6 || hour >= 18) key = "greeting.evening";
+  else if (hour >= 12) key = "greeting.afternoon";
+  const timeGreeting = (typeof t === 'function') ? t(key) : "Bom dia";
+
+  // Usa o nome de quem fez login — nunca um nome fixo
+  greetingEl.innerText = _aurexUserName
+    ? `${timeGreeting}, ${_aurexUserName}!`
+    : `${timeGreeting}!`;
+}
+
+// Reseta a UI para um chat novo (usado pelo "Novo Chat" e pelo chat temporário)
+function resetChatUI() {
+  currentChatId = Date.now().toString();
+  chatHistory = [{ role: "system", content: SYSTEM_PROMPT }];
+  let newTask = localStorage.getItem("aurex_active_task");
+  if (newTask) chatHistory[0].content += "\n\n# MEMORIA DA TAREFA ATIVA:\n" + newTask;
+  const mc = document.getElementById('messages-container');
+  if (mc) mc.innerHTML = '';
+  const ws = document.getElementById('welcome-screen');
+  if (ws) ws.style.display = 'flex';
+  const ci = document.getElementById('chat-interface');
+  if (ci) ci.style.display = 'none';
+  const mi = document.getElementById('main-input');
+  if (mi) mi.value = '';
+  const cbi = document.getElementById('chat-bottom-input');
+  if (cbi) cbi.value = '';
+  renderSidebarChats();
+}
+
+// ========== CHAT TEMPORÁRIO ==========
+function setTempChatState(active) {
+  isTempChat = !!active;
+  document.body.classList.toggle('temp-chat', isTempChat);
+  var btn = document.getElementById('toggle-temp-chat');
+  if (btn) btn.classList.toggle('temp-chat-active', isTempChat);
+}
+
+function setupTempChat() {
+  var btn = document.getElementById('toggle-temp-chat');
+  if (!btn) return;
+  btn.addEventListener('click', function () {
+    // Alternar sempre inicia uma conversa nova, para não vazar histórico
+    setTempChatState(!isTempChat);
+    resetChatUI();
+    if (isTempChat) {
+      switchToChatMode();
+      appendMessageToUI('assistant', t('tempChat.started'), false);
+    }
+  });
 }
 
 function setupEventListeners() {
@@ -765,21 +956,8 @@ function setupEventListeners() {
   // New Chat
   const newChatBtn = document.getElementById('new-chat-btn');
   if (newChatBtn) newChatBtn.addEventListener('click', () => {
-    currentChatId = Date.now().toString();
-    chatHistory = [{ role: "system", content: SYSTEM_PROMPT }];
-    let newTask = localStorage.getItem("aurex_active_task");
-    if (newTask) chatHistory[0].content += "\n\n# MEMORIA DA TAREFA ATIVA:\n" + newTask;
-    const mc = document.getElementById('messages-container');
-    if (mc) mc.innerHTML = '';
-    const ws = document.getElementById('welcome-screen');
-    if (ws) ws.style.display = 'flex';
-    const ci = document.getElementById('chat-interface');
-    if (ci) ci.style.display = 'none';
-
-    const mi = document.getElementById('main-input');
-    if (mi) mi.value = '';
-    const cbi = document.getElementById('chat-bottom-input');
-    if (cbi) cbi.value = '';
+    setTempChatState(false); // Novo chat pela sidebar sempre volta ao modo normal
+    resetChatUI();
     if (sidebar) sidebar.classList.add('hidden');
   });
 
@@ -913,6 +1091,12 @@ function parseMarkdown(text) {
   html = html.replace(/\*\*\*(.*?)\*\*\*/gim, '<strong><em>$1</em></strong>');
   html = html.replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>');
   html = html.replace(/\*(.*?)\*/gim, '<em>$1</em>');
+
+  // Links [texto](https://url) — apenas http/https, abre em nova aba
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/gim, function(match, label, url) {
+    var safeUrl = url.replace(/"/g, '%22');
+    return '<a class="md-link" href="' + safeUrl + '" target="_blank" rel="noopener noreferrer">' + label + '</a>';
+  });
   
   // Agora processar linhas para listas
   var lines = html.split('\n');
@@ -1494,7 +1678,7 @@ async function processLLMLoop(iterationCount = 0) {
     // - Se houver "Chave da API", usa Bearer com essa chave.
     // - Se "Servidor local (sem login)" estiver ligado, não envia Authorization.
     // - Caso contrário, faz o login OAuth padrão do Aurex.
-    var apiBase = (localStorage.getItem('aurex_api_base_url') || 'https://api.aurexai.com/v1').replace(/\/+$/, '');
+    var apiBase = getAurexApiBase();
     var apiUrl = apiBase + '/chat/completions';
     var requestHeaders = { "Content-Type": "application/json" };
     var apiKey = (localStorage.getItem('aurex_api_key') || '').trim();
@@ -1512,8 +1696,13 @@ async function processLLMLoop(iterationCount = 0) {
     if (requestMessages[0] && requestMessages[0].role === "system") {
       let extraDirectives = "";
 
-      // Modo de operação (Plano / Normal / Autônomo)
+      // Modo de operação (Plano / Normal / Rápido / Autônomo)
       extraDirectives += getModeDirective();
+
+      // Nome do usuário logado (definido no onboarding) — nunca é fixo
+      if (_aurexUserName) {
+        extraDirectives += "\n\n# USUARIO\nO nome do usuário é " + _aurexUserName + ". Chame-o pelo nome de forma natural quando fizer sentido (saudações, conclusões de tarefa), sem exagerar. O Aurex in Chrome está em versão beta: se o usuário perguntar sobre estabilidade, explique com transparência que podem ocorrer erros e que ações em sites sensíveis devem ser revisadas.";
+      }
 
       // Idioma escolhido pelo usuário (muda a cada requisição se trocado)
       if (typeof getLanguageDirective === "function") {
@@ -1744,7 +1933,7 @@ async function processLLMLoop(iterationCount = 0) {
     if (loadingDiv) loadingDiv.remove();
 
     const fetchFailed = error instanceof TypeError && error.message === "Failed to fetch";
-    var apiBaseShown = (localStorage.getItem('aurex_api_base_url') || 'https://api.aurexai.com/v1');
+    var apiBaseShown = getAurexApiBase();
     if (fetchFailed) {
       // N\u00e3o conseguiu nem conectar: provavelmente URL errada do servidor ou CORS
       appendMessageToUI('assistant', "\u274c N\u00e3o consegui conectar ao servidor (" + escapeHtml(apiBaseShown) + ").\n\nVerifique em Configura\u00e7\u00f5es \u25b8 Geral \u25b8 Servidor:\n\u2022 se a URL do servidor est\u00e1 correta (ex: http://localhost:3000/v1);\n\u2022 se o servidor est\u00e1 rodando e aceita requisi\u00e7\u00f5es da extens\u00e3o (CORS);\n\u2022 marque \"Servidor local (sem login)\" se ele n\u00e3o usa OAuth.");
@@ -1897,14 +2086,22 @@ function executeToolInBrowser(name, args) {
   });
 }
 
-// ========== MODOS DE OPERAÇÃO (PLANO / NORMAL / AUTÔNOMO) ==========
+// ========== MODOS DE OPERAÇÃO (PLANO / NORMAL / RÁPIDO / AUTÔNOMO) ==========
+var AUREX_MODES = ['plan', 'normal', 'fast', 'autonomous'];
+var AUREX_MODE_ICONS = {
+  plan: 'fa-compass-drafting',
+  normal: 'fa-message',
+  fast: 'fa-bolt',
+  autonomous: 'fa-robot'
+};
+
 function getAurexMode() {
   var m = localStorage.getItem('aurex_mode') || 'plan';
-  return ['plan', 'normal', 'autonomous'].includes(m) ? m : 'plan';
+  return AUREX_MODES.includes(m) ? m : 'plan';
 }
 
 function setAurexMode(mode) {
-  if (!['plan', 'normal', 'autonomous'].includes(mode)) mode = 'plan';
+  if (!AUREX_MODES.includes(mode)) mode = 'plan';
   localStorage.setItem('aurex_mode', mode);
   // O background lê este valor para auto-conceder permissões no modo autônomo
   try { chrome.storage.local.set({ aurex_mode: mode }); } catch (e) { /* ignore */ }
@@ -1916,6 +2113,9 @@ function getModeDirective() {
   var mode = getAurexMode();
   if (mode === 'normal') {
     return "\n\n# MODO DE OPERAÇÃO: NORMAL\nIMPORTANTE: NESTE MODO, IGNORE a regra do 'PLANO DE ACAO OBRIGATORIO'. NÃO mostre widget de plano nem peça aprovação para começar. Execute a tarefa diretamente, agindo passo a passo. Ainda assim, respeite os pedidos de permissão por site e confirme antes de ações destrutivas ou irreversíveis (ex: enviar formulários sensíveis, apagar dados).";
+  }
+  if (mode === 'fast') {
+    return "\n\n# MODO DE OPERAÇÃO: RÁPIDO (FAST)\nIMPORTANTE: NESTE MODO, IGNORE a regra do 'PLANO DE ACAO OBRIGATORIO'. NÃO mostre widget de plano nem peça aprovação para começar. Priorize VELOCIDADE: respostas curtas e diretas (1 a 4 frases quando possível), o mínimo de passos de ferramenta necessários, sem seções longas nem widgets decorativos. Vá direto ao resultado. Ainda assim, respeite os pedidos de permissão por site e confirme antes de ações destrutivas ou irreversíveis.";
   }
   if (mode === 'autonomous') {
     return "\n\n# MODO DE OPERAÇÃO: AUTÔNOMO\nIMPORTANTE: NESTE MODO, IGNORE a regra do 'PLANO DE ACAO OBRIGATORIO'. NÃO mostre widget de plano e NÃO peça aprovação ao usuário. Execute a tarefa inteira de ponta a ponta de forma autônoma, tomando decisões por conta própria até concluir. Só pare se for absolutamente impossível continuar.";
@@ -1933,6 +2133,8 @@ function setupModeSelector() {
   function refreshActive() {
     var mode = getAurexMode();
     if (label) label.textContent = t('mode.' + mode);
+    var headerIcon = btn.querySelector('.mode-icon');
+    if (headerIcon) headerIcon.className = 'fa-solid ' + (AUREX_MODE_ICONS[mode] || 'fa-compass-drafting') + ' mode-icon';
     menu.querySelectorAll('.mode-option').forEach(function (opt) {
       opt.classList.toggle('active', opt.getAttribute('data-mode') === mode);
     });
@@ -2103,6 +2305,8 @@ function setupSettingsPanel() {
       if (key) localStorage.setItem('aurex_api_key', key); else localStorage.removeItem('aurex_api_key');
       saveServer.textContent = '✓';
       setTimeout(function () { saveServer.textContent = t('settings.server.save'); }, 1200);
+      // Se o usuário ativou o servidor local, o gate de login deixa de bloquear
+      if (typeof window._aurexRefreshOnboarding === 'function') window._aurexRefreshOnboarding();
     });
   }
 
@@ -2604,6 +2808,15 @@ function setupSkillsPanel() {
     });
   }
 
+  // Busca da Lojinha
+  const storeSearch = document.getElementById('store-search');
+  if (storeSearch) {
+    storeSearch.addEventListener('input', () => {
+      storeSearchQuery = storeSearch.value.trim();
+      renderSkillsLists();
+    });
+  }
+
   // Create Form
   const btnCreate = document.getElementById('btn-create-skill');
   const formCreate = document.getElementById('create-skill-form');
@@ -2793,8 +3006,12 @@ function renderSkillsLists() {
     }
 
     storeList.innerHTML = '';
+    var query = (storeSearchQuery || '').toLowerCase();
     catalog.filter(function(skill) {
-      return activeStoreCategory === 'Todas' || skill.category === activeStoreCategory;
+      if (activeStoreCategory !== 'Todas' && skill.category !== activeStoreCategory) return false;
+      if (!query) return true;
+      return [skill.name, skill.desc, skill.slug, skill.category]
+        .some(function(field) { return (field || '').toLowerCase().indexOf(query) !== -1; });
     }).forEach(function(skill) {
       var isAdded = userSkills.some(function(s) { return s.id === skill.id; });
       var btnClass = isAdded ? 'action-btn' : 'action-btn primary';
@@ -2804,12 +3021,17 @@ function renderSkillsLists() {
       var safeLevel = escapeHtml(skill.level || '');
       var safeName = escapeHtml(skill.name || '');
       var safeDesc = escapeHtml(skill.desc || '');
+      var safeSlug = escapeHtml(skill.slug || '');
+      var safeAuthor = escapeHtml(skill.author || 'Aurex');
+      var safeDownloads = escapeHtml(skill.downloads || '');
       var html = '<article class="store-skill-card">' +
         '<div class="store-card-head">' +
           '<span class="store-card-icon"><i class="fa-solid ' + skill.icon + '"></i></span>' +
           '<div class="store-card-copy">' +
             '<div class="store-card-meta"><span>' + safeCategory + '</span><b>' + safeLevel + '</b></div>' +
+            '<div class="store-card-slug">/' + safeSlug + '</div>' +
             '<h4>' + safeName + '</h4>' +
+            '<div class="store-card-stats"><span class="store-author">' + safeAuthor + '</span><span>&bull;</span><span><i class="fa-solid fa-download"></i> ' + safeDownloads + '</span></div>' +
           '</div>' +
         '</div>' +
         '<p>' + safeDesc + '</p>' +
@@ -2843,80 +3065,86 @@ function renderSkillsLists() {
   }
 }
 
-// === LISTENER DE MENSAGENS (PERMISSÕES E WORKFLOW) ===
+// === PERMISSÕES: BANNER ACIMA DO CHAT (estilo Claude in Chrome) ===
+// A solicitação de permissão NÃO aparece mais no meio das mensagens: ela é
+// renderizada como um banner fixo acima da conversa, e some ao ser respondida.
+function renderPermissionBanner(origin, token) {
+  var area = document.getElementById('permission-banner-area');
+  if (!area) return;
+
+  // Evita banners duplicados para a mesma origem
+  var existing = area.querySelector('[data-origin="' + CSS.escape(origin) + '"]');
+  if (existing) return;
+
+  var displayDomain = origin;
+  try { displayDomain = new URL(origin).hostname; } catch (e) { /* mantém origem crua */ }
+
+  var banner = document.createElement('div');
+  banner.className = 'permission-banner';
+  banner.setAttribute('data-origin', origin);
+
+  var head = document.createElement('div');
+  head.className = 'permission-banner-head';
+  head.innerHTML = '<i class="fa-solid fa-shield-halved"></i>';
+  var headText = document.createElement('span');
+  headText.textContent = t('perm.title');
+  head.appendChild(headText);
+
+  var domainLine = document.createElement('div');
+  domainLine.className = 'permission-banner-domain';
+  domainLine.innerHTML = escapeHtml(t('perm.desc')) + ' <b>' + escapeHtml(displayDomain) + '</b>';
+
+  var sub = document.createElement('div');
+  sub.className = 'permission-banner-sub';
+  sub.textContent = t('perm.session');
+
+  var actions = document.createElement('div');
+  actions.className = 'permission-banner-actions';
+
+  function dismiss() {
+    banner.style.transition = 'all 0.35s cubic-bezier(0.4, 0, 0.2, 1)';
+    banner.style.opacity = '0';
+    banner.style.transform = 'translateY(-8px) scale(0.98)';
+    setTimeout(function () { banner.remove(); }, 350);
+  }
+
+  var approveBtn = document.createElement('button');
+  approveBtn.className = 'btn-approve-origin';
+  approveBtn.innerHTML = '<i class="fa-solid fa-check"></i> ' + escapeHtml(t('perm.allow'));
+  approveBtn.addEventListener('click', function () {
+    chrome.runtime.sendMessage({ type: 'grant_permission', origin: origin, token: token }, function (response) {
+      void chrome.runtime.lastError;
+      if (response && response.success) dismiss();
+    });
+  });
+
+  var denyBtn = document.createElement('button');
+  denyBtn.className = 'btn-deny-origin';
+  denyBtn.innerHTML = '<i class="fa-solid fa-xmark"></i> ' + escapeHtml(t('perm.block'));
+  denyBtn.addEventListener('click', function () {
+    chrome.runtime.sendMessage({ type: 'deny_permission', origin: origin, token: token }, function (response) {
+      void chrome.runtime.lastError;
+      if (response && response.success) dismiss();
+    });
+  });
+
+  actions.appendChild(approveBtn);
+  actions.appendChild(denyBtn);
+
+  banner.appendChild(head);
+  banner.appendChild(domainLine);
+  banner.appendChild(sub);
+  banner.appendChild(actions);
+  area.appendChild(banner);
+
+  if (MotionUI.canAnimate()) {
+    gsap.fromTo(banner, { autoAlpha: 0, y: -12 }, { autoAlpha: 1, y: 0, duration: 0.35, ease: 'power2.out', clearProps: 'transform' });
+  }
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.type === "permission_required") {
-    // Extrai o domínio limpo para mostrar ao usuário
-    let displayDomain = request.origin;
-    try { displayDomain = new URL(request.origin).hostname; } catch(e) {}
-    const safeDisplayDomain = escapeHtml(displayDomain);
-    const safeOrigin = escapeHtml(request.origin);
-    const safeToken = escapeHtml(request.token);
-    
-    // Widget de permissão no mesmo estilo visual do Plano do Aurex
-    const htmlContent = `
-      <widget>
-      <div class="perm-widget">
-        <div class="perm-header">
-          <i class="ti ti-shield-lock perm-icon"></i>
-          <strong>Permissão Necessária</strong>
-        </div>
-        <div class="perm-disclaimer">Segurança Zero Trust — permissão válida apenas nesta sessão</div>
-        <div class="perm-domain">
-          <div class="perm-domain-label"><i class="ti ti-world"></i> Site solicitado:</div>
-          <div class="perm-domain-name">${safeDisplayDomain}</div>
-          <div class="perm-origin">${safeOrigin}</div>
-        </div>
-        <div class="perm-actions">
-          <button class="btn-approve-origin" data-origin="${safeOrigin}" data-token="${safeToken}">Permitir acesso</button>
-          <button class="btn-deny-origin" data-origin="${safeOrigin}" data-token="${safeToken}">Bloquear</button>
-        </div>
-        <div class="perm-footer">O Aurex ficará pausado até você decidir. Ao fechar o Chrome, a permissão é revogada automaticamente.</div>
-      </div>
-      </widget>
-    `;
-    
-    // NÃO adicionamos ao chatHistory para não quebrar a sequência tool_calls -> tool
-    appendMessageToUI("assistant", htmlContent);
-  }
-});
-
-// Event delegation para botões injetados no chat (permissão e bloqueio)
-var _messagesContainerEl = document.getElementById('messages-container');
-if (_messagesContainerEl) _messagesContainerEl.addEventListener('click', (e) => {
-  // Botão de APROVAR
-  if (e.target && e.target.classList.contains('btn-approve-origin')) {
-    const origin = e.target.getAttribute('data-origin');
-    const token = e.target.getAttribute('data-token');
-    const widgetContainer = e.target.closest('.aurex-widget') || e.target.closest('.message');
-    
-    chrome.runtime.sendMessage({ type: "grant_permission", origin: origin, token: token }, (response) => {
-      if (!response || !response.success) return;
-
-      // Animação de saída suave (igual ao plano aprovado)
-      if (widgetContainer) {
-        widgetContainer.style.transition = 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)';
-        widgetContainer.style.opacity = '0';
-        widgetContainer.style.transform = 'translateY(-10px) scale(0.98)';
-        setTimeout(function() { widgetContainer.style.display = 'none'; }, 400);
-      }
-    });
-  }
-  
-  // Botão de BLOQUEAR
-  if (e.target && e.target.classList.contains('btn-deny-origin')) {
-    const origin = e.target.getAttribute('data-origin');
-    const token = e.target.getAttribute('data-token');
-    const widgetContainer = e.target.closest('.aurex-widget') || e.target.closest('.message');
-
-    chrome.runtime.sendMessage({ type: "deny_permission", origin: origin, token: token }, (response) => {
-      if (!response || !response.success || !widgetContainer) return;
-
-      widgetContainer.style.transition = 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)';
-      widgetContainer.style.opacity = '0';
-      widgetContainer.style.transform = 'translateY(-10px) scale(0.98)';
-      setTimeout(function() { widgetContainer.style.display = 'none'; }, 400);
-    });
+    renderPermissionBanner(request.origin, request.token);
   }
 });
 

@@ -43,8 +43,8 @@
 
       <div class="sidebar-footer">
         <div class="user-profile">
-          <div class="avatar">G</div>
-          <span class="username" id="sidebar-username">Giovanni</span>
+          <div class="avatar" id="sidebar-avatar">A</div>
+          <span class="username" id="sidebar-username">Aurex</span>
         </div>
         <button id="open-settings" class="icon-btn" data-i18n-title="sidebar.settings" title="Configurações">
           <i class="fa-solid fa-gear"></i>
@@ -70,8 +70,12 @@
               <div class="mode-option-desc" data-i18n="mode.plan.desc">Pergunta antes de agir e cria um plano</div>
             </button>
             <button class="mode-option" data-mode="normal">
-              <div class="mode-option-title"><i class="fa-solid fa-bolt"></i> <span data-i18n="mode.normal">Normal</span></div>
+              <div class="mode-option-title"><i class="fa-solid fa-message"></i> <span data-i18n="mode.normal">Normal</span></div>
               <div class="mode-option-desc" data-i18n="mode.normal.desc">Age direto, sem criar plano</div>
+            </button>
+            <button class="mode-option" data-mode="fast">
+              <div class="mode-option-title"><i class="fa-solid fa-bolt"></i> <span data-i18n="mode.fast">Rápido</span></div>
+              <div class="mode-option-desc" data-i18n="mode.fast.desc">Respostas curtas e execução direta, sem rodeios</div>
             </button>
             <button class="mode-option" data-mode="autonomous">
               <div class="mode-option-title"><i class="fa-solid fa-robot"></i> <span data-i18n="mode.autonomous">Autônomo</span></div>
@@ -79,7 +83,14 @@
             </button>
           </div>
         </div>
+        <span class="temp-chat-pill" id="temp-chat-pill"><i class="fa-solid fa-clock-rotate-left"></i> <span data-i18n="tempChat.pill">Chat temporário</span></span>
+        <button id="toggle-temp-chat" class="icon-btn" data-i18n-title="tempChat.toggle" title="Chat temporário (não salva no histórico)">
+          <i class="fa-solid fa-user-secret"></i>
+        </button>
       </header>
+
+      <!-- Banner de permissões (acima do chat, estilo Claude) -->
+      <div class="permission-banner-area" id="permission-banner-area"></div>
 
       <!-- Welcome Screen (Visible only on new chat) -->
       <div class="welcome-screen" id="welcome-screen">
@@ -168,6 +179,10 @@
             </div>
             <div class="store-metrics" id="store-metrics"></div>
           </section>
+          <div class="store-search-wrap">
+            <i class="fa-solid fa-search"></i>
+            <input type="text" id="store-search" class="store-search-input" data-i18n-ph="skills.storeSearch" placeholder="Pesquisar habilidades...">
+          </div>
           <div class="store-filter-row" id="store-filter-row"></div>
           <div class="store-skills-list" id="store-skills-list">
             <!-- Catálogo gerado dinamicamente -->
@@ -200,7 +215,7 @@
             <div class="setting-block">
               <div class="setting-title" data-i18n="settings.server">Servidor</div>
               <div class="setting-desc" data-i18n="settings.server.desc">Endereço do servidor que processa as conversas. Use o seu servidor local se estiver rodando no terminal.</div>
-              <input type="text" id="server-url-input" class="setting-select" data-i18n-ph="settings.server.urlPh" placeholder="http://localhost:3000/v1">
+              <input type="text" id="server-url-input" class="setting-select" data-i18n-ph="settings.server.urlPh" placeholder="http://127.0.0.1:3030">
               <label class="setting-toggle-row" style="margin-top:12px;">
                 <div>
                   <div class="setting-toggle-label" data-i18n="settings.server.local">Servidor local (sem login)</div>
@@ -346,6 +361,37 @@
       </div>
 
     </main>
+
+    <!-- Onboarding: login + nome + aviso beta -->
+    <div class="onboarding-overlay hidden" id="onboarding-overlay">
+      <div class="onboarding-card">
+        <div class="onboarding-logo">A</div>
+
+        <!-- Passo 1: conectar conta -->
+        <div id="onboarding-step-login" class="hidden">
+          <h2 data-i18n="onboarding.loginTitle">Conecte sua conta Aurex</h2>
+          <p data-i18n="onboarding.loginDesc">Para começar, conecte sua conta Aurex ou use um servidor local nas Configurações.</p>
+          <div class="onboarding-actions" style="margin-top: 14px;">
+            <button class="action-btn primary" id="onboarding-login-btn"><i class="fa-solid fa-right-to-bracket"></i> <span data-i18n="onboarding.loginBtn">Conectar conta</span></button>
+            <button class="onboarding-skip" id="onboarding-local-btn" data-i18n="onboarding.useLocal">Usar servidor local (sem login)</button>
+          </div>
+        </div>
+
+        <!-- Passo 2: nome + beta -->
+        <div id="onboarding-step-name" class="hidden">
+          <h2 data-i18n="onboarding.nameTitle">Como devemos te chamar?</h2>
+          <p data-i18n="onboarding.nameDesc">O Aurex vai usar seu nome para personalizar a conversa.</p>
+          <input type="text" id="onboarding-name-input" maxlength="40" autocomplete="off" data-i18n-ph="onboarding.namePh" placeholder="Ex: Paulo" style="margin-top: 10px;">
+          <div class="onboarding-beta" style="margin-top: 12px;">
+            <i class="fa-solid fa-flask"></i>
+            <span data-i18n="onboarding.beta">Aurex in Chrome está em beta. Podem ocorrer erros e existem riscos ao automatizar ações no navegador. Revise as ações em sites sensíveis.</span>
+          </div>
+          <div class="onboarding-actions" style="margin-top: 14px;">
+            <button class="action-btn primary" id="onboarding-name-btn"><i class="fa-solid fa-arrow-right"></i> <span data-i18n="onboarding.start">Começar</span></button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Menu de atalhos (aparece ao digitar / no chat) -->
