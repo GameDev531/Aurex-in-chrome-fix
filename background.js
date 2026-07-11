@@ -281,8 +281,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const pending = PermissionManager.pendingResolvers ? PermissionManager.pendingResolvers[request.origin] : null;
     
     if (!pending) {
-      console.warn(`[Aurex Security] Bloqueada tentativa de forjar permissão para: ${request.origin}`);
-      sendResponse({ success: false, error: "Nenhuma permissão pendente para esta origem." });
+      // Ou é uma tentativa forjada, ou o service worker reiniciou e o pedido
+      // ficou órfão (stale). O popup usa "stale" para dispensar o banner.
+      console.warn(`[Aurex Security] Sem permissão pendente para: ${request.origin} (forjada ou expirada)`);
+      sendResponse({ success: false, stale: true, error: "Nenhuma permissão pendente para esta origem." });
       return true;
     }
 
