@@ -2198,54 +2198,136 @@ function fileMimeForExt(ext) {
   return map[ext] || "text/plain;charset=utf-8";
 }
 
+// Retorna a aba web ativa (ignora chrome://, extensões e páginas restritas)
+function getActiveWebTab() {
+  return new Promise(function (resolve) {
+    chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+      var tab = tabs && tabs[0];
+      var restricted = !tab || !tab.url ||
+        /^(chrome|edge|about|chrome-extension|devtools|view-source):/.test(tab.url) ||
+        /^https:\/\/chrome\.google\.com\/webstore/.test(tab.url);
+      resolve(restricted ? null : tab);
+    });
+  });
+}
+
+// Envia um comando ao content script. Se o content script ainda não estiver na
+// aba (aba aberta antes da extensão, ou injeção pendente), injeta content.js
+// programaticamente e tenta de novo — em vez de falhar com "Receiving end".
+function sendToContentScript(tabId, payload) {
+  return new Promise(function (resolve) {
+    function attempt(isRetry) {
+      chrome.tabs.sendMessage(tabId, { action: "dom_action", payload: payload }, function (response) {
+        if (chrome.runtime.lastError) {
+          var errMsg = chrome.runtime.lastError.message || "";
+          if (!isRetry && errMsg.indexOf("Receiving end does not exist") !== -1) {
+            // Injeta o content script e repete uma vez
+            chrome.scripting.executeScript({ target: { tabId: tabId }, files: ["content.js"] }, function () {
+              if (chrome.runtime.lastError) {
+                resolve({ success: false, error: "Não consegui preparar esta aba para leitura (" + (chrome.runtime.lastError.message || "injeção falhou") + "). A página pode ser restrita pelo navegador." });
+                return;
+              }
+              setTimeout(function () { attempt(true); }, 150);
+            });
+            return;
+          }
+          resolve({ success: false, error: errMsg || "Falha ao falar com a aba." });
+          return;
+        }
+        // Truncar resultados muito grandes para não estourar o contexto do LLM
+        var resultStr = JSON.stringify(response);
+        if (resultStr.length > 20000 && response) {
+          response.data = {
+            warning: "O DOM era muito grande e foi truncado.",
+            content: resultStr.substring(0, 20000) + "... [TRUNCADO]"
+          };
+        }
+        resolve(response || { success: false, error: "Resposta vazia da aba." });
+      });
+    }
+    attempt(false);
+  });
+}
+
 function executeToolInBrowser(name, args) {
   return new Promise((resolve) => {
     if (name === "dom_action") {
-      
+
       if (args.command === "wait") {
         var ms = parseInt(args.value) || 5000;
         setTimeout(function() { resolve({ success: true, message: "Aguardou por " + ms + "ms" }) }, ms);
         return;
       }
 
-      // Comandos que usam a nova API Debugger
-      if (["get_accessibility_tree", "simulate_click", "simulate_type", "press_key"].includes(args.command)) {
-        chrome.runtime.sendMessage({ action: "debugger_action", payload: args }, (response) => {
-          if (chrome.runtime.lastError) {
-             resolve({ success: false, error: chrome.runtime.lastError.message });
+      // NAVEGAÇÃO: via chrome.tabs.update (confiável) em vez do content script.
+      // Assim funciona mesmo em abas onde o content script não foi injetado.
+      if (args.command === "navigate" || args.command === "search_web") {
+        var targetUrl = args.command === "search_web"
+          ? "https://www.google.com/search?q=" + encodeURIComponent(args.value || "")
+          : (args.value || "");
+        if (!/^https?:\/\//i.test(targetUrl)) targetUrl = "https://" + targetUrl;
+        getActiveWebTab().then(function (tab) {
+          var doNavigate = function (tabId) {
+            chrome.tabs.update(tabId, { url: targetUrl }, function () {
+              if (chrome.runtime.lastError) {
+                resolve({ success: false, error: chrome.runtime.lastError.message });
+              } else {
+                resolve({ success: true, message: "Navegando para " + targetUrl + ". Use wait antes de ler a página." });
+              }
+            });
+          };
+          if (tab) {
+            doNavigate(tab.id);
           } else {
-             resolve(response);
+            // Sem aba web utilizável: abre uma nova aba já na URL desejada
+            chrome.tabs.create({ url: targetUrl, active: true }, function (newTab) {
+              if (chrome.runtime.lastError) resolve({ success: false, error: chrome.runtime.lastError.message });
+              else resolve({ success: true, message: "Abri uma nova aba em " + targetUrl + ". Use wait antes de ler a página." });
+            });
           }
         });
         return;
       }
-      
-      // Comandos legados do Content Script
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (!tabs[0]) {
-          resolve({ success: false, error: "No active tab" });
+
+      // Comandos que usam a API Debugger (leitura semântica e interação real)
+      if (["get_accessibility_tree", "simulate_click", "simulate_type", "press_key"].includes(args.command)) {
+        chrome.runtime.sendMessage({ action: "debugger_action", payload: args }, (response) => {
+          if (chrome.runtime.lastError) {
+            response = { success: false, error: chrome.runtime.lastError.message };
+          }
+
+          // Fallback de LEITURA: se a árvore de acessibilidade falhar ou vier
+          // vazia (comum em SPAs pesados), tenta ler o DOM pelo content script.
+          // EXCEÇÃO: se o usuário negou a permissão, respeitamos e NÃO lemos.
+          var treeEmpty = response && response.success && (!response.tree || response.tree.length === 0);
+          var permissionDenied = response && !response.success &&
+            /PERMISS[ÃA]O RECUSADA/i.test(response.error || "");
+          if (!permissionDenied && args.command === "get_accessibility_tree" && (!response || !response.success || treeEmpty)) {
+            getActiveWebTab().then(function (tab) {
+              if (!tab) { resolve(response || { success: false, error: "Aba atual não pode ser lida." }); return; }
+              sendToContentScript(tab.id, { command: "read_dom" }).then(function (domRes) {
+                if (domRes && domRes.success) {
+                  resolve({ success: true, fallback: "read_dom", tree: [], data: domRes.data,
+                    message: "A árvore de acessibilidade veio vazia; li o conteúdo do DOM da página." });
+                } else {
+                  resolve(response || domRes || { success: false, error: "Não consegui ler a página." });
+                }
+              });
+            });
+            return;
+          }
+          resolve(response);
+        });
+        return;
+      }
+
+      // Demais comandos (read_dom, scroll, get_element_text) via content script
+      getActiveWebTab().then(function (tab) {
+        if (!tab) {
+          resolve({ success: false, error: "A aba atual é uma página restrita do navegador. Peça ao usuário para abrir uma página web comum (ex: o site do curso) e tente de novo." });
           return;
         }
-        chrome.tabs.sendMessage(tabs[0].id, { action: "dom_action", payload: args }, (response) => {
-          if (chrome.runtime.lastError) {
-            const errMsg = chrome.runtime.lastError.message;
-            if (errMsg.includes("Receiving end does not exist")) {
-               resolve({ success: false, error: "A aba atual está bloqueada ou precisa ser atualizada. Por favor, peça ao usuário para ABRIR UMA NOVA ABA e navegar para um site (ex: google.com) antes de pesquisar ou interagir." });
-            } else {
-               resolve({ success: false, error: errMsg });
-            }
-          } else {
-            // Truncar resultados muito grandes para não estourar o contexto do LLM
-            let resultStr = JSON.stringify(response);
-            if (resultStr.length > 20000) {
-              response.data = {
-                 warning: "O DOM era muito grande e foi truncado.",
-                 content: resultStr.substring(0, 20000) + "... [TRUNCADO]"
-              };
-            }
-            resolve(response);
-          }
-        });
+        sendToContentScript(tab.id, args).then(resolve);
       });
     } else if (name === "capture_screenshot") {
       chrome.tabs.captureVisibleTab(null, { format: "png" }, (dataUrl) => {
