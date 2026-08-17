@@ -162,9 +162,17 @@ async function handleDebuggerAction(action, payload) {
     await PermissionManager.grantPermission(origin);
   }
 
-  const isAllowed = await PermissionManager.requirePermission(tabId, origin);
-  if (!isAllowed) {
-    throw new Error(`PERMISSÃO RECUSADA: ${origin}.`);
+  const decision = await PermissionManager.requirePermission(tabId, origin);
+  if (!decision.granted) {
+    if (decision.reason === 'pending') {
+      // O usuário ainda não decidiu. A tarefa NÃO falhou — o agente deve
+      // aguardar e tentar de novo, não declarar que não conseguiu.
+      throw new Error(`AGUARDANDO PERMISSÃO: o banner de permissão para ${origin} está na tela e o usuário ainda não decidiu. NÃO desista da tarefa e NÃO diga que falhou: use o comando wait (3000 a 5000 ms) e repita esta mesma ação até o usuário aprovar ou bloquear.`);
+    }
+    if (decision.reason === 'no-panel') {
+      throw new Error(`PERMISSÃO PENDENTE: o painel do Aurex está fechado, então não foi possível mostrar o pedido de permissão para ${origin}. Peça ao usuário para abrir o painel lateral do Aurex e então tente novamente.`);
+    }
+    throw new Error(`PERMISSÃO RECUSADA: o usuário bloqueou o acesso a ${origin}. Não tente acessar este site de novo; siga com outra abordagem ou pergunte ao usuário como proceder.`);
   }
 
   await ensureDebuggerAttached(tabId);

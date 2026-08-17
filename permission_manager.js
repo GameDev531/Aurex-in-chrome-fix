@@ -71,54 +71,70 @@ export class PermissionManager {
     }
   }
 
-  // Intercepta a chamada no background e avisa o popup caso não tenha permissão
+  // Intercepta a chamada no background e avisa o popup caso não tenha permissão.
+  // Resolve com { granted, reason } — 'granted' | 'denied' | 'pending' | 'no-panel'.
+  // NUNCA nega por conta própria enquanto o usuário ainda pode decidir: o agente
+  // deve ficar aguardando, não desistir da tarefa.
   static async requirePermission(tabId, origin) {
     const hasPerm = await this.checkPermission(origin);
-    if (hasPerm) return true;
+    if (hasPerm) return { granted: true, reason: 'granted' };
+
+    // Se já existe um pedido pendente para esta origem, não abre outro:
+    // reaproveita o mesmo (evita banners duplicados e pedidos concorrentes).
+    if (this.pendingResolvers[origin]) {
+      return new Promise((resolve) => {
+        this.pendingResolvers[origin].waiters.push(resolve);
+      });
+    }
 
     // SECURITY FIX: Token imprevisível
     const token = crypto.randomUUID();
 
-    console.warn(`[Aurex PermissionManager] Acesso pausado para a origem: ${origin}. Aguardando aprovação do usuário...`);
+    console.warn(`[Aurex PermissionManager] Acesso pausado para a origem: ${origin}. Aguardando decisão do usuário...`);
 
-    // Pausa a execução do agente retornando uma Promise que só resolve quando o usuário clicar
     return new Promise((resolve) => {
-      // Timeout de segurança: se ninguém decidir em 5 minutos, nega e libera
-      // o agente em vez de travar a tarefa para sempre.
+      // Janela generosa para o usuário decidir. Ao expirar NÃO negamos: o
+      // agente é avisado de que a decisão ainda está pendente e deve aguardar.
       const timeoutId = setTimeout(() => {
-        this.resolvePending(origin, false);
-      }, 5 * 60 * 1000);
+        this._settle(origin, { granted: false, reason: 'pending' });
+      }, 10 * 60 * 1000);
 
       this.pendingResolvers[origin] = {
-        resolve: resolve,
+        waiters: [resolve],
         token: token,
         timeoutId: timeoutId
       };
       this._startKeepalive();
 
-      // Registra o pending request antes de expor a aprovação ao popup.
       chrome.runtime.sendMessage({
         type: "permission_required",
         origin: origin,
         tabId: tabId,
         token: token
-      }, () => {
-        // Painel fechado (sem listener): falha rápido em vez de pendurar a tarefa
-        if (chrome.runtime.lastError) {
-          this.resolvePending(origin, false);
+      }, (response) => {
+        const err = chrome.runtime.lastError;
+        if (!err) return; // Painel recebeu e confirmou: seguimos aguardando o clique
+
+        // "Receiving end does not exist" = nenhum listener, painel fechado.
+        // Outros erros (ex: porta fechada sem resposta) NÃO significam ausência
+        // de painel — nesse caso continuamos aguardando a decisão do usuário.
+        if ((err.message || '').includes('Receiving end does not exist')) {
+          this._settle(origin, { granted: false, reason: 'no-panel' });
         }
       });
     });
   }
 
-  static resolvePending(origin, granted = true) {
-    if (this.pendingResolvers[origin]) {
-      if (this.pendingResolvers[origin].timeoutId) {
-        clearTimeout(this.pendingResolvers[origin].timeoutId);
-      }
-      this.pendingResolvers[origin].resolve(granted);
-      delete this.pendingResolvers[origin];
-    }
+  static _settle(origin, result) {
+    const pending = this.pendingResolvers[origin];
+    if (!pending) return;
+    if (pending.timeoutId) clearTimeout(pending.timeoutId);
+    delete this.pendingResolvers[origin];
+    pending.waiters.forEach((resolve) => resolve(result));
     if (Object.keys(this.pendingResolvers).length === 0) this._stopKeepalive();
+  }
+
+  static resolvePending(origin, granted = true) {
+    this._settle(origin, { granted: granted, reason: granted ? 'granted' : 'denied' });
   }
 }

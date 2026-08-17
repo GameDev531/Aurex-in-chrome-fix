@@ -203,6 +203,7 @@
             <button class="settings-tab active" data-settings-tab="general" data-i18n="settings.tab.general">Geral</button>
             <button class="settings-tab" data-settings-tab="personality" data-i18n="settings.tab.personality">Personalidade</button>
             <button class="settings-tab" data-settings-tab="shortcuts" data-i18n="settings.tab.shortcuts">Atalhos</button>
+            <button class="settings-tab" data-settings-tab="integrations" data-i18n="settings.tab.integrations">Integrações</button>
             <button class="settings-tab" data-settings-tab="file" data-i18n="settings.tab.file">Arquivo</button>
             <button class="settings-tab" data-settings-tab="keyboard" data-i18n="settings.tab.keyboard">Atalho de teclado</button>
             <button class="settings-tab" data-settings-tab="account" data-i18n="settings.tab.account">Conta</button>
@@ -289,6 +290,35 @@
                 </div>
               </div>
               <div id="shortcuts-list" class="shortcuts-list"></div>
+            </div>
+          </div>
+
+          <!-- INTEGRAÇÕES (chaves de API do usuário) -->
+          <div class="settings-section" id="settings-integrations">
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.integrations.title">Chaves de API</div>
+              <div class="setting-desc" data-i18n="settings.integrations.desc">Cadastre suas próprias chaves para o Aurex usar as APIs oficiais (Google Maps, clima, notícias). É o jeito certo de obter dados de serviços que não permitem automação na página — sem depender de raspar o site.</div>
+
+              <div class="integration-form">
+                <select id="integration-service" class="setting-select"></select>
+                <div id="integration-custom-fields" class="hidden">
+                  <input type="text" id="integration-host" class="setting-select" style="margin-top:8px;" data-i18n-ph="settings.integrations.hostPh" placeholder="Host da API (ex: api.exemplo.com)">
+                  <input type="text" id="integration-param" class="setting-select" style="margin-top:8px;" data-i18n-ph="settings.integrations.paramPh" placeholder="Nome do parâmetro (ex: key) ou header (ex: X-Api-Key)">
+                  <label class="setting-toggle-row" style="margin-top:8px;">
+                    <div><div class="setting-toggle-label" data-i18n="settings.integrations.asHeader">Enviar como header</div></div>
+                    <span class="switch"><input type="checkbox" id="integration-as-header"><span class="slider"></span></span>
+                  </label>
+                </div>
+                <input type="password" id="integration-key" class="setting-select" style="margin-top:8px;" data-i18n-ph="settings.integrations.keyPh" placeholder="Cole sua chave de API">
+                <button class="action-btn primary" id="add-integration" style="margin-top:10px;"><i class="fa-solid fa-plus"></i> <span data-i18n="settings.integrations.add">Adicionar chave</span></button>
+              </div>
+
+              <div id="integrations-list" class="integrations-list"></div>
+
+              <div class="integration-note">
+                <i class="fa-solid fa-shield-halved"></i>
+                <span data-i18n="settings.integrations.note">As chaves ficam salvas apenas neste navegador e são enviadas somente para o host correspondente. O modelo nunca vê o valor da chave — o Aurex a injeta na requisição.</span>
+              </div>
             </div>
           </div>
 
