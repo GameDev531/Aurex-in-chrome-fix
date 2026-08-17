@@ -296,6 +296,24 @@
           <!-- INTEGRAÇÕES (chaves de API do usuário) -->
           <div class="settings-section" id="settings-integrations">
             <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.search.title">Busca na web</div>
+              <div class="setting-desc" data-i18n="settings.search.desc">Escolha o provedor de busca e cole sua própria chave. Sem isso, o Aurex pesquisa abrindo um buscador em uma aba.</div>
+              <select id="search-provider" class="setting-select"></select>
+              <input type="text" id="search-model" class="setting-select hidden" style="margin-top:8px;" data-i18n-ph="settings.search.modelPh" placeholder="Modelo (padrão: gemini-2.0-flash)">
+              <input type="password" id="search-key" class="setting-select" style="margin-top:8px;" data-i18n-ph="settings.search.keyPh" placeholder="Cole a chave do provedor escolhido">
+              <button class="action-btn primary" id="save-search" style="margin-top:10px;"><i class="fa-solid fa-magnifying-glass"></i> <span data-i18n="settings.search.save">Salvar busca</span></button>
+              <div class="integration-status" id="search-status"></div>
+            </div>
+
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.places.title">Google Maps (Places API New)</div>
+              <div class="setting-desc" data-i18n="settings.places.desc">Cole sua chave do Google Places API (New) para o Aurex consultar endereços, estabelecimentos, horários e avaliações pela API oficial — em vez de tentar ler o site do Maps.</div>
+              <input type="password" id="places-key" class="setting-select" data-i18n-ph="settings.places.keyPh" placeholder="Chave do Google Places API (New)">
+              <button class="action-btn primary" id="save-places" style="margin-top:10px;"><i class="fa-solid fa-location-dot"></i> <span data-i18n="settings.places.save">Salvar chave do Places</span></button>
+              <div class="integration-status" id="places-status"></div>
+            </div>
+
+            <div class="setting-block">
               <div class="setting-title" data-i18n="settings.integrations.title">Chaves de API</div>
               <div class="setting-desc" data-i18n="settings.integrations.desc">Cadastre suas próprias chaves para o Aurex usar as APIs oficiais (Google Maps, clima, notícias). É o jeito certo de obter dados de serviços que não permitem automação na página — sem depender de raspar o site.</div>
 

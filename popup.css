@@ -2217,3 +2217,23 @@ body.temp-chat .temp-chat-pill { display: inline-flex; }
   border: 1px solid var(--border-soft);
 }
 .integration-note i { color: var(--text-accent); margin-top: 2px; }
+
+/* --- Status de integração (ativa / inativa) --- */
+.integration-status {
+  margin-top: 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted, #6b6f7d);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.integration-status::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint, #4b4f5c);
+}
+.integration-status.ok { color: var(--accent-green); }
+.integration-status.ok::before { background: var(--accent-green); box-shadow: 0 0 8px rgba(0,230,138,0.5); }
