@@ -1594,6 +1594,39 @@ function appendToolResultToUI(msgDiv, result) {
   MotionUI.completeTool(msgDiv, result.success);
 }
 
+// Teto de caracteres para o resultado de UMA ferramenta no histórico.
+// Sem isto, uma árvore de acessibilidade grande entra crua no contexto a cada
+// leitura e estoura o limite do modelo no meio da tarefa.
+var TOOL_RESULT_MAX_CHARS = 24000;
+
+function serializeToolResult(result) {
+  var serialized = JSON.stringify(result);
+  if (serialized.length <= TOOL_RESULT_MAX_CHARS) return serialized;
+
+  // Primeiro tenta cortar só os campos volumosos, preservando a estrutura
+  // que o modelo usa para decidir o próximo passo.
+  if (result && typeof result === 'object' && !Array.isArray(result)) {
+    var trimmed = {};
+    Object.keys(result).forEach(function (key) {
+      var value = result[key];
+      if (typeof value === 'string' && value.length > 4000) {
+        trimmed[key] = value.substring(0, 4000) + '... [truncado: ' + (value.length - 4000) + ' caracteres omitidos]';
+      } else if (Array.isArray(value) && value.length > 120) {
+        trimmed[key] = value.slice(0, 120);
+        trimmed[key + '_truncated'] = 'mostrando 120 de ' + value.length + ' itens';
+      } else {
+        trimmed[key] = value;
+      }
+    });
+    serialized = JSON.stringify(trimmed);
+    if (serialized.length <= TOOL_RESULT_MAX_CHARS) return serialized;
+  }
+
+  // Último recurso: corte bruto, sempre avisando o modelo do que aconteceu
+  return serialized.substring(0, TOOL_RESULT_MAX_CHARS) +
+    '... [RESULTADO TRUNCADO. Refaca a consulta de forma mais especifica, por exemplo com find_element.]';
+}
+
 // --- Loop Detection State ---
 const _loopDetector = {
   recentCalls: [],    // Sliding window of recent tool signatures
@@ -1977,11 +2010,26 @@ async function processLLMLoop(iterationCount = 0) {
             _loopDetector.recentCalls = [];
           }
 
-          while (!result.success && retryCount < MAX_RETRIES && name === "dom_action" &&
-                 (args.command === "simulate_click" || args.command === "simulate_type")) {
+          // Antes de escalar para o modelo, tenta de novo localmente: o alvo
+          // pode ter mudado de posição num SPA que ainda estava renderizando.
+          // (Não repetir quando o bloqueio é permissão — aí é decisão do usuário.)
+          var isPermissionBlock = /PERMISS[ÃA]O (RECUSADA|PENDENTE)|AGUARDANDO PERMISS[ÃA]O/i.test(result.error || "");
+          var isInteraction = name === "dom_action" &&
+            (args.command === "simulate_click" || args.command === "simulate_type");
+
+          while (!result.success && !isPermissionBlock && isInteraction && retryCount < MAX_RETRIES) {
             retryCount++;
-            console.log("[Aurex] Retry " + retryCount + "/" + MAX_RETRIES + " para " + args.command);
-            
+            console.log("[Aurex] Retry local " + retryCount + "/" + MAX_RETRIES + " para " + args.command);
+            await new Promise(function (r) { setTimeout(r, 400 * retryCount); });
+            result = await executeToolInBrowser(name, args);
+          }
+
+          // Se ainda falhou depois das tentativas locais, escala para o modelo
+          // com uma screenshot para ele escolher outro alvo.
+          if (!result.success && !isPermissionBlock && isInteraction) {
+            // O usuário precisa ver que a ação falhou, não só o modelo
+            appendToolResultToUI(toolUiNode, result);
+
             // Captura screenshot da tela atual para o modelo ver
             var retryScreenshot = await new Promise(function(resolve) {
               chrome.tabs.captureVisibleTab(null, { format: "png" }, function(dataUrl) {
@@ -1995,7 +2043,7 @@ async function processLLMLoop(iterationCount = 0) {
               role: "tool",
               tool_call_id: toolCall.id,
               name: name,
-              content: "FALHA: " + (result.error || "Acao nao executada") + ". Tentativa " + retryCount + " de " + MAX_RETRIES + ". Re-leia a arvore de acessibilidade e tente um seletor/id diferente."
+              content: "FALHA: " + (result.error || "Acao nao executada") + ". Ja foram feitas " + retryCount + " tentativas automaticas no mesmo alvo. NAO repita o mesmo id: releia a pagina (get_accessibility_tree ou find_element) e escolha outro elemento, ou verifique se a pagina mudou de estado."
             });
 
             // Preenche as tools restantes com erro para evitar API 400 "insufficient tool messages"
@@ -2036,7 +2084,7 @@ async function processLLMLoop(iterationCount = 0) {
             role: "tool",
             tool_call_id: toolCall.id,
             name: name,
-            content: typeof result.dataUrl === 'string' ? "Screenshot captured successfully." : JSON.stringify(result)
+            content: typeof result.dataUrl === 'string' ? "Screenshot captured successfully." : serializeToolResult(result)
           });
         } catch (toolError) {
           console.error("Erro interno ao processar a tool " + name + ":", toolError);
