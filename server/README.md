@@ -51,3 +51,88 @@ chave de `AUREX_API_KEYS` no campo de chave da API.
 - PKCE S256 verificado no `/auth/token`.
 - Sem `AUREX_API_KEYS` configurado e sem token, o `/v1` fica aberto **apenas
   para desenvolvimento local** — configure chaves em produção.
+
+---
+
+## Sandbox de código (execução em container)
+
+Permite que o Aurex execute Python, Node e shell para **produzir arquivos de
+verdade** (.docx, .xlsx, .pptx, .pdf, gráficos) e processar dados.
+
+> **Importante:** a sandbox roda **no servidor**, não no computador do usuário.
+> Uma extensão Chrome não pode criar processos — por isso a execução vive aqui.
+
+### Como ligar
+
+```bash
+# 1. Construir a imagem (uma vez; leva alguns minutos)
+./sandbox/build.sh
+
+# 2. Configurar o .env
+AUREX_SANDBOX_ENABLED=true
+AUREX_API_KEYS=<uma-chave-forte>          # obrigatório
+AUREX_JWT_SECRET=<segredo-aleatorio-longo> # obrigatório
+AUREX_BIND_HOST=127.0.0.1
+
+# 3. Subir
+npm start
+```
+
+Na extensão, cole a mesma chave em **Configurações ▸ Geral ▸ Servidor** (campo
+"Chave da API"). Sem ela, a execução é recusada.
+
+### Travas de segurança
+
+A sandbox executa código decidido por um modelo que lê páginas da web — ou seja,
+uma injeção de prompt numa página é uma tentativa de execução remota. Por isso:
+
+1. Nasce **desligada** (`AUREX_SANDBOX_ENABLED=false`). Desligada, as rotas nem
+   são registradas (404, não 403).
+2. O servidor **se recusa a subir** (`exit 1`) se a sandbox estiver ligada e:
+   `AUREX_API_KEYS` estiver vazio; `AUREX_JWT_SECRET` for o valor de exemplo;
+   o bind for público sem `AUREX_SANDBOX_ALLOW_PUBLIC_BIND=true`; ou o processo
+   estiver rodando como root sem `AUREX_SANDBOX_ALLOW_ROOT=true`.
+3. Execução **nunca** aceita chamador anônimo, mesmo que o `/chat` aceite.
+4. O bind agora é `127.0.0.1` por padrão — antes o servidor escutava em todas as
+   interfaces apesar do log dizer o contrário.
+
+### Isolamento
+
+Cada execução roda num container descartável com `--network none`, usuário sem
+privilégios, rootfs read-only, `--cap-drop ALL`, `no-new-privileges`, limites de
+memória/CPU/PIDs e timeout duplo (dentro e fora do container). O comando do
+usuário viaja como argumento de argv, nunca interpolado numa string de shell.
+
+O workspace de cada conversa é um diretório persistente montado em `/work`;
+`pip install` e `npm install` são direcionados para dentro dele, então instalar
+numa execução e usar na seguinte funciona.
+
+### Limitações honestas
+
+- **Sem rede no container.** O que a imagem não trouxer, não roda. Isso é
+  deliberado: o container processa conteúdo lido de páginas web, e dar saída de
+  rede a ele criaria um canal de exfiltração.
+- **Pertencer ao grupo `docker` equivale a root no host.** Se o processo Node
+  for comprometido, o isolamento do *sandbox* não protege o *host*. A mitigação
+  real é **Docker rootless** — motivo pelo qual a sandbox nasce desligada e se
+  recusa a subir junto com autenticação anônima.
+- **Execução síncrona** com timeout (padrão 120 s, máximo configurável). Builds
+  muito longos não são o caso de uso desta versão.
+- Jobs não sobrevivem a um restart do servidor; containers órfãos são varridos
+  no boot.
+
+### Endpoints
+
+| Método | Rota | Função |
+|---|---|---|
+| POST | `/v1/sandbox/sessions/:sid/exec` | executa comando ou código |
+| GET | `/v1/sandbox/sessions/:sid/files` | lista o workspace |
+| GET | `/v1/sandbox/sessions/:sid/files/content` | lê um arquivo |
+| POST | `/v1/sandbox/sessions/:sid/files` | grava um arquivo |
+| GET | `/v1/sandbox/sessions/:sid/files/raw` | baixa um artefato |
+| DELETE | `/v1/sandbox/sessions/:sid` | destrói o workspace |
+| GET | `/v1/sandbox/health` | estado detalhado (autenticado) |
+
+O `GET /health` (sem autenticação) já traz um bloco `sandbox` com
+`enabled`/`ready`/`reason` — é o que a extensão sonda para saber se pode
+oferecer as ferramentas ao modelo.

@@ -240,12 +240,15 @@ var SYSTEM_PROMPT = "Voc\u00ea \u00e9 o Aurex, um Web Agent inteligente integrad
 "Seu trabalho \u00e9 analisar p\u00e1ginas, interagir com elas e fornecer relat\u00f3rios diretos e profissionais.\n" +
 "DATA ATUAL: " + new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }) + ".\n\n" +
 "# IDENTIDADE DO PRODUTO\n" +
-"Voc\u00ea \u00e9 um Browser Operating Agent: opera o navegador do usu\u00e1rio de ponta a ponta. Voc\u00ea n\u00e3o \u00e9 CLI, terminal, IDE, servidor local ou sistema operacional \u2014 n\u00e3o executa comandos na m\u00e1quina do usu\u00e1rio nem acessa arquivos locais dele.\n" +
-"Seu trabalho padr\u00e3o \u00e9 OPERAR A WEB: navegar entre abas, ler p\u00e1ginas, clicar, preencher formul\u00e1rios, pesquisar, consultar APIs oficiais, consolidar informa\u00e7\u00e3o e entregar arquivos na pasta Downloads.\n\n" +
+"Voc\u00ea \u00e9 um Browser Operating Agent: opera o navegador do usu\u00e1rio de ponta a ponta.\n" +
+"Voc\u00ea N\u00c3O tem acesso ao computador do usu\u00e1rio: n\u00e3o executa comandos na m\u00e1quina dele, n\u00e3o l\u00ea nem escreve arquivos locais dele. A \u00fanica forma de entregar um arquivo \u00e9 salvando na pasta Downloads.\n" +
+"Voc\u00ea TEM, quando o servidor Aurex a disponibiliza, uma sandbox Linux isolada RODANDO NO SERVIDOR (container Docker, sem rede, descart\u00e1vel). \u00c9 l\u00e1 \u2014 e s\u00f3 l\u00e1 \u2014 que voc\u00ea executa c\u00f3digo.\n" +
+"Seu trabalho padr\u00e3o \u00e9 OPERAR A WEB: navegar entre abas, ler p\u00e1ginas, clicar, preencher formul\u00e1rios, pesquisar, consultar APIs oficiais, consolidar informa\u00e7\u00e3o e entregar arquivos.\n\n" +
 "# SUAS CAPACIDADES (ARQUITETURA)\n" +
 "1. BROWSER TOOLS \u2014 controle real da p\u00e1gina via navegador: get_accessibility_tree (leitura sem\u00e2ntica), simulate_click, simulate_type, press_key, scroll, navigate, capture_screenshot, read_dom, wait, e tab_manager para m\u00faltiplas abas.\n" +
 "2. WEB TOOLS \u2014 informa\u00e7\u00e3o da web sem depender da aba aberta: web_search (busca na internet), web_fetch (baixa e l\u00ea uma URL diretamente) e extract_page (extrai o conte\u00fado leg\u00edvel da aba atual).\n" +
 "3. EXTERNAL TOOLS \u2014 dados oficiais de servi\u00e7os externos: google_places (locais, endere\u00e7os e avalia\u00e7\u00f5es via Google Places API New) e api_request (qualquer API que o usu\u00e1rio tenha configurado).\n" +
+"4. SANDBOX (quando ativa) \u2014 computa\u00e7\u00e3o real no servidor: run_command (shell), run_code (Python/Node/Bash) e sandbox_files. O workspace persiste durante toda a conversa. Use para PRODUZIR ARQUIVOS DE VERDADE: .docx (python-docx), .xlsx (openpyxl), .pptx (python-pptx), .pdf (reportlab), gr\u00e1ficos (matplotlib), al\u00e9m de processar dados e converter formatos. Depois de gerar, entregue com sandbox_files command='deliver'.\n" +
 "REGRA DE ESCOLHA: para um fato ou pesquisa ampla, prefira web_search/web_fetch (r\u00e1pido e sem abrir abas). Para dados de lugares/mapas, use google_places em vez de raspar o site do Maps. Para agir dentro de um site (logar, preencher, clicar, baixar algo de uma conta), use as Browser Tools na aba.\n" +
 "Se uma ferramenta externa n\u00e3o estiver configurada, explique ao usu\u00e1rio em uma frase que ele pode adicionar a chave em Configura\u00e7\u00f5es \u25b8 Integra\u00e7\u00f5es e ofere\u00e7a seguir por outro caminho.\n\n" +
 "# PROGRAMA\u00c7\u00c3O (SOMENTE QUANDO FOR PEDIDO)\n" +
@@ -344,8 +347,10 @@ var SYSTEM_PROMPT = "Voc\u00ea \u00e9 o Aurex, um Web Agent inteligente integrad
 "3. Use `close_tab` para fechar abas que voce nao precisa mais para liberar memoria RAM do usuario.\n" +
 "4. Use `task_memory` com `set_task` para registrar seu progresso da tarefa na memoria persistente (isso ajuda voce a nao se perder em tarefas longas).\n\n" +
 "# REGRA DE SALVAMENTO DE ARQUIVOS\n" +
-"SEMPRE que criar ou salvar um arquivo, use save_markdown_file com conteudo em Markdown, salvo na pasta Downloads do usuario.\n" +
-"Extensoes suportadas no filename: .md (padrao), .txt, .html, .csv, .json e .docx. Se o usuario pedir um documento Word/entregavel formal, use a extensao .docx — o sistema converte o Markdown (titulos, listas, tabelas, negrito) em um documento Word real automaticamente.\n" +
+"Dois caminhos, escolha conforme o que o arquivo exige:\n" +
+"1. SANDBOX (quando ativa) — para tudo que precisa de COMPUTACAO ou de formato binario real: planilhas com formulas, apresentacoes, PDFs com layout, graficos, processamento de dados, conversao de formatos. Gere com run_code e entregue com sandbox_files command='deliver'.\n" +
+"2. save_markdown_file — para texto, markdown, relatorios simples e codigo que nao precisa ser executado. Extensoes: .md (padrao), .txt, .html, .csv, .json, .docx (Markdown convertido em Word automaticamente) e extensoes de codigo.\n" +
+"Se a sandbox estiver indisponivel, use save_markdown_file e diga com franqueza ao usuario o que nao foi possivel gerar.\n" +
 "Use apenas o nome do arquivo, sem caminho, sem Desktop, sem Documentos e sem pastas. Exemplo correto: 'Resumo_da_Pagina.md' ou 'Relatorio_Final.docx'.\n" +
 "NUNCA leia, liste, crie pastas ou acesse arquivos locais existentes no computador do usuario.\n\n" +
 "# PLANO DE ACAO OBRIGATORIO\n" +
@@ -567,6 +572,56 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "run_command",
+      description: "SANDBOX: executa um comando de shell num container Linux isolado NO SERVIDOR Aurex (nao no computador do usuario). O diretorio de trabalho persiste durante toda a conversa, entao arquivos criados por um comando ficam disponiveis para o proximo. Ja vem com python3, node 20 e as bibliotecas python-docx, openpyxl, python-pptx, reportlab, pypdf, pandas, matplotlib e Pillow. Use para inspecionar o workspace, converter arquivos e rodar processos. NAO ha acesso a internet dentro do container.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", description: "Comando bash. Ex: 'ls -la', 'python3 gerar.py', 'wc -l dados.csv'" },
+          timeout_ms: { type: "number", description: "Tempo maximo em ms (padrao 120000)" }
+        },
+        required: ["command"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_code",
+      description: "SANDBOX: escreve um arquivo de codigo no workspace do servidor e o executa. Use para PRODUZIR ARQUIVOS DE VERDADE: .docx com python-docx, .xlsx com openpyxl, .pptx com python-pptx, .pdf com reportlab, graficos com matplotlib. O arquivo do script fica salvo e pode ser corrigido e reexecutado. Depois de gerar o arquivo, entregue ao usuario com sandbox_files command='deliver'.",
+      parameters: {
+        type: "object",
+        properties: {
+          language: { type: "string", enum: ["python", "node", "bash"], description: "Linguagem do codigo" },
+          code: { type: "string", description: "Codigo completo e funcional, sem cercas ```" },
+          filename: { type: "string", description: "Nome do arquivo no workspace. Ex: gerar_relatorio.py" },
+          args: { type: "array", items: { type: "string" }, description: "Argumentos de linha de comando" },
+          timeout_ms: { type: "number", description: "Tempo maximo em ms (padrao 120000)" }
+        },
+        required: ["language", "code"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "sandbox_files",
+      description: "SANDBOX: gerencia os arquivos do workspace. list: lista arquivos; read: le um arquivo de texto; write: cria ou sobrescreve um arquivo; deliver: ENTREGA o arquivo na pasta Downloads do usuario (use isto para entregar .docx, .xlsx, .pdf, .pptx e imagens geradas); delete: apaga.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", enum: ["list", "read", "write", "deliver", "delete"] },
+          path: { type: "string", description: "Caminho relativo dentro do workspace. Ex: 'relatorio.docx'" },
+          content: { type: "string", description: "Conteudo para o comando write" },
+          save_as: { type: "string", description: "Nome do arquivo na pasta Downloads (deliver)" }
+        },
+        required: ["command"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "task_memory",
       description: "Um bloco de notas persistente do Aurex. Use para salvar estados complexos, todo-lists ou roadmaps durante execucao de multi-passos.",
       parameters: {
@@ -677,6 +732,8 @@ document.addEventListener('DOMContentLoaded', () => {
   setupMotion();
   setupTempChat();
   setupOnboarding();
+  // Aquece a sonda da sandbox para a primeira mensagem já saber o estado real
+  if (typeof AurexSandbox !== 'undefined') AurexSandbox.probe();
   // Esconde o menu de atalhos ao clicar fora ou perder o foco
   document.addEventListener('click', function (e) {
     var menu = document.getElementById('slash-menu');
@@ -1544,6 +1601,20 @@ function appendToolCallToUI(name, args) {
     else if (args.command === "switch_tab") humanMessage = "🔄 Mudando para aba: " + args.tabId;
     else if (args.command === "close_tab") humanMessage = "❌ Fechando aba: " + args.tabId;
   }
+  else if (name === "run_command") {
+    humanMessage = "⚙️ Executando na sandbox: " + String(args.command || "").substring(0, 60);
+  }
+  else if (name === "run_code") {
+    var langLabel = { python: "Python", node: "Node", bash: "Bash" }[args.language] || args.language;
+    humanMessage = "🧪 Rodando código " + langLabel + " na sandbox...";
+  }
+  else if (name === "sandbox_files") {
+    if (args.command === "deliver") humanMessage = "📦 Entregando arquivo: " + (args.path || "");
+    else if (args.command === "list") humanMessage = "🗂️ Listando arquivos da sandbox...";
+    else if (args.command === "read") humanMessage = "📖 Lendo arquivo da sandbox: " + (args.path || "");
+    else if (args.command === "write") humanMessage = "✍️ Gravando arquivo na sandbox: " + (args.path || "");
+    else humanMessage = "🗑️ Apagando arquivo da sandbox: " + (args.path || "");
+  }
   else if (name === "find_element") {
     humanMessage = "🎯 Localizando na página: " + (args.query || "");
   }
@@ -1704,7 +1775,13 @@ function _getToolSignature(toolCall) {
       args.url,
       args.path,
       args.value,
-      args.key
+      args.key,
+      args.query,
+      args.condition,
+      // Scripts distintos não podem colidir na mesma assinatura de loop
+      args.filename,
+      args.code ? String(args.code).slice(0, 80) : undefined,
+      args.command
     ].filter(function(value) {
       return value !== undefined && value !== null && value !== '';
     }).join('|').substring(0, 160);
@@ -2670,6 +2747,19 @@ function executeToolInBrowser(name, args) {
           }
         });
       });
+    } else if (name === "run_command") {
+      AurexSandbox.exec({ command: args.command, timeout_ms: args.timeout_ms })
+        .then(function (res) { resolve(shapeSandboxResult(res)); });
+    } else if (name === "run_code") {
+      AurexSandbox.exec({
+        language: args.language,
+        code: args.code,
+        filename: args.filename,
+        args: args.args,
+        timeout_ms: args.timeout_ms
+      }).then(function (res) { resolve(shapeSandboxResult(res)); });
+    } else if (name === "sandbox_files") {
+      executeSandboxFiles(args).then(resolve);
     } else if (name === "google_places") {
       executeGooglePlaces(args).then(resolve);
     } else if (name === "api_request") {
@@ -3236,6 +3326,16 @@ function getToolingDirective() {
   lines.push(getPlacesKey()
     ? "- google_places: ATIVA (Places API New)."
     : "- google_places: NAO CONFIGURADA. Nao chame esta ferramenta; avise que a chave do Google Places API (New) pode ser adicionada em Configuracoes > Integracoes.");
+
+  var sandbox = (typeof AurexSandbox !== 'undefined') ? AurexSandbox.cached() : null;
+  if (sandbox && sandbox.ready) {
+    lines.push("- run_command / run_code / sandbox_files: ATIVAS (container Docker isolado no servidor, sem rede, workspace persistente por conversa). Use para gerar arquivos reais (.docx, .xlsx, .pdf, graficos) e depois entregar com sandbox_files command='deliver'.");
+  } else {
+    lines.push("- run_command / run_code / sandbox_files: INDISPONIVEIS" +
+      (sandbox && sandbox.reason ? " (" + sandbox.reason + ")" : "") +
+      ". NAO chame estas ferramentas; entregue o conteudo com save_markdown_file.");
+  }
+
   return "\n\n# ESTADO DAS FERRAMENTAS\n" + lines.join("\n");
 }
 
@@ -3464,6 +3564,92 @@ async function executeGooglePlaces(args) {
     return { success: true, command: command, count: places.length, places: places };
   } catch (err) {
     return { success: false, error: "Falha na Places API: " + err.message };
+  }
+}
+
+// ========== SANDBOX: FORMATAÇÃO DO RESULTADO PARA O MODELO ==========
+// Corta a saída mantendo cabeça E cauda: em log de build o erro final está na
+// cauda; em `ls`, o que importa está na cabeça.
+function truncateOutput(text, budget) {
+  text = String(text || "");
+  budget = budget || 8000;
+  if (text.length <= budget) return { text: text, truncated: false };
+  var half = Math.floor(budget / 2);
+  var omitted = text.length - budget;
+  return {
+    text: text.slice(0, half) + "\n... [" + omitted + " caracteres omitidos] ...\n" + text.slice(-half),
+    truncated: true
+  };
+}
+
+function shapeSandboxResult(res) {
+  if (!res || res.success === false) {
+    return {
+      success: false,
+      error: (res && res.error) || "Falha na sandbox.",
+      code: res && res.code,
+      hint: res && res.code === 'sandbox_unavailable'
+        ? "A sandbox nao esta disponivel neste servidor. Entregue o conteudo por save_markdown_file ou avise o usuario."
+        : undefined
+    };
+  }
+
+  var out = truncateOutput(res.stdout, 8000);
+  var err = truncateOutput(res.stderr, 6000);
+  var ok = res.exit_code === 0;
+
+  // Em falha, stdout e stderr são a informação MAIS útil (o traceback):
+  // descartá-los é o erro clássico aqui.
+  var shaped = {
+    success: ok,
+    exit_code: res.exit_code,
+    duration_ms: res.duration_ms,
+    stdout: out.text,
+    stderr: err.text,
+    artifacts: res.artifacts || []
+  };
+
+  if (out.truncated || err.truncated) {
+    shaped.output_truncated = true;
+    shaped.output_bytes = { stdout: res.stdout_bytes, stderr: res.stderr_bytes };
+  }
+  if (res.timed_out) shaped.timed_out = true;
+  if (res.oom_killed) shaped.oom_killed = true;
+  if (res.script_file) shaped.script_file = res.script_file;
+  if (res.hint) shaped.hint = res.hint;
+  if (!ok && !res.hint) {
+    shaped.hint = "Leia o stderr acima para entender a causa, corrija o codigo e execute de novo.";
+  }
+  return shaped;
+}
+
+async function executeSandboxFiles(args) {
+  var command = args.command;
+  try {
+    if (command === "list") {
+      var listed = await AurexSandbox.listFiles(args.path, 3);
+      if (!listed.success) return listed;
+      return { success: true, entries: listed.entries, used_bytes: listed.used_bytes };
+    }
+    if (command === "read") {
+      if (!args.path) return { success: false, error: "Informe o caminho do arquivo." };
+      return await AurexSandbox.readFile(args.path);
+    }
+    if (command === "write") {
+      if (!args.path) return { success: false, error: "Informe o caminho do arquivo." };
+      return await AurexSandbox.writeFile(args.path, args.content || "");
+    }
+    if (command === "deliver") {
+      if (!args.path) return { success: false, error: "Informe o caminho do arquivo a entregar." };
+      return await AurexSandbox.deliver(args.path, args.save_as);
+    }
+    if (command === "delete") {
+      if (!args.path) return { success: false, error: "Informe o caminho do arquivo." };
+      return await AurexSandbox.deleteFile(args.path);
+    }
+    return { success: false, error: "Comando desconhecido em sandbox_files: " + command };
+  } catch (err) {
+    return { success: false, error: "Falha em sandbox_files: " + err.message };
   }
 }
 

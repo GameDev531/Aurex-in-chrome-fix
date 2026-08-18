@@ -15,7 +15,12 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { initDb, usingPostgres } from './db.js';
-import { registerAuthRoutes, verifyAccessToken } from './auth.js';
+import { registerAuthRoutes } from './auth.js';
+import { authenticate, validApiKeys } from './middleware.js';
+import { readSandboxConfig, assertSandboxBootConfig, dockerPreflight, SandboxBootError } from './sandbox/config.js';
+import { registerSandboxRoutes } from './sandbox/routes.js';
+import { sweepOrphanContainers } from './sandbox/docker.js';
+import { startSandboxSweeper } from './sandbox/sweeper.js';
 
 const app = express();
 app.use(cors()); // extensão roda em chrome-extension:// — liberamos CORS
@@ -28,50 +33,31 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 const DEEPSEEK_URL = 'https://api.deepseek.com/chat/completions';
 const DEEPSEEK_MODEL = 'deepseek-chat';
 
-function validApiKeys() {
-  return (process.env.AUREX_API_KEYS || '')
-    .split(',')
-    .map((key) => key.trim())
-    .filter(Boolean);
-}
+// authenticate e validApiKeys agora vivem em middleware.js, para a sandbox
+// poder reusar exatamente a mesma autenticação.
 
-// Bearer: JWT do fluxo OAuth ou chave legada da lista AUREX_API_KEYS.
-// Sem header Authorization: só é aceito se não houver nenhuma chave configurada
-// (modo totalmente aberto para desenvolvimento local).
-function authenticate(req, res, next) {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-
-  if (token) {
-    if (validApiKeys().includes(token)) {
-      req.aurexUser = { name: 'API Key', apiKey: true };
-      return next();
-    }
-    const payload = verifyAccessToken(token);
-    if (payload) {
-      req.aurexUser = { id: payload.sub, name: payload.name, email: payload.email };
-      return next();
-    }
-    return res.status(401).json({ error: { message: 'Token inválido ou expirado. Faça login novamente.' } });
-  }
-
-  if (validApiKeys().length === 0) {
-    req.aurexUser = { name: 'Anônimo (dev)', anonymous: true };
-    return next();
-  }
-  return res.status(401).json({ error: { message: 'Autenticação obrigatória: envie Bearer token ou chave da API.' } });
-}
+// Estado da sandbox, preenchido no boot e lido pelas rotas
+const sandboxCfg = readSandboxConfig();
+const sandboxState = { ready: false, reason: 'Sandbox desativada.' };
 
 app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'aurex-server',
     database: usingPostgres() ? 'postgres' : 'memory',
-    model: process.env.DEEPSEEK_API_KEY ? 'deepseek (proxy)' : 'não configurado'
+    model: process.env.DEEPSEEK_API_KEY ? 'deepseek (proxy)' : 'não configurado',
+    sandbox: {
+      enabled: sandboxCfg.enabled,
+      ready: sandboxState.ready,
+      reason: sandboxState.reason || null
+    }
   });
 });
 
 registerAuthRoutes(app);
+// Registrado antes do 404 catch-all; se a sandbox estiver desligada, esta
+// chamada não registra rota nenhuma.
+registerSandboxRoutes(app, { cfg: sandboxCfg, state: sandboxState });
 
 app.post('/v1/chat/completions', authenticate, async (req, res) => {
   const apiKey = process.env.DEEPSEEK_API_KEY;
@@ -115,9 +101,47 @@ app.use((req, res) => {
   res.status(404).json({ error: { message: `Rota não encontrada: ${req.method} ${req.path}` } });
 });
 
-initDb().then(() => {
-  app.listen(PORT, () => {
-    console.log(`[Aurex Server] Rodando em http://127.0.0.1:${PORT}`);
-    console.log(`[Aurex Server] Chat: POST http://127.0.0.1:${PORT}/v1/chat/completions`);
+async function start() {
+  // Trava de boot: falha ruidosa em vez de subir com a sandbox exposta.
+  try {
+    assertSandboxBootConfig(sandboxCfg);
+  } catch (err) {
+    if (err instanceof SandboxBootError) {
+      console.error('\n[Aurex Server] ABORTANDO — ' + err.message + '\n');
+      process.exit(1);
+    }
+    throw err;
+  }
+
+  await initDb();
+
+  if (sandboxCfg.enabled) {
+    const preflight = await dockerPreflight(sandboxCfg);
+    sandboxState.ready = preflight.ready;
+    sandboxState.reason = preflight.reason || null;
+    if (preflight.ready) {
+      const swept = await sweepOrphanContainers(sandboxCfg);
+      if (swept) console.log(`[Aurex Sandbox] ${swept} container(s) órfão(s) removido(s).`);
+      console.log(`[Aurex Sandbox] Pronta (Docker ${preflight.dockerVersion}, imagem ${sandboxCfg.image}).`);
+      startSandboxSweeper(sandboxCfg);
+    } else {
+      // Docker indisponível não derruba o servidor: o chat continua, e a
+      // sandbox se declara indisponível com um motivo acionável.
+      console.warn(`[Aurex Sandbox] Indisponível: ${preflight.reason}`);
+    }
+  }
+
+  const host = sandboxCfg.bindHost;
+  app.listen(PORT, host, () => {
+    console.log(`[Aurex Server] Rodando em http://${host}:${PORT}`);
+    console.log(`[Aurex Server] Chat: POST http://${host}:${PORT}/v1/chat/completions`);
+    if (sandboxCfg.enabled && sandboxState.ready) {
+      console.log(`[Aurex Server] Sandbox: POST http://${host}:${PORT}/v1/sandbox/sessions/<id>/exec`);
+    }
   });
+}
+
+start().catch((err) => {
+  console.error('[Aurex Server] Falha ao iniciar:', err);
+  process.exit(1);
 });

@@ -10,8 +10,12 @@ let pool = null;
 const memory = {
   users: new Map(),          // id -> { id, name, email, google_sub }
   refreshTokens: new Map(),  // token -> { userId, expiresAt }
-  authCodes: new Map()       // code -> { userId, challenge, redirectUri, expiresAt }
+  authCodes: new Map(),      // code -> { userId, challenge, redirectUri, expiresAt }
+  sandboxSessions: new Map(),// sessionId -> { ownerKey, lastUsedAt, expiresAt }
+  sandboxRuns: []            // auditoria (limitada, mais recente ao fim)
 };
+
+const MEMORY_RUN_LIMIT = 1000;
 
 export function usingPostgres() {
   return pool !== null;
@@ -48,6 +52,36 @@ export async function initDb() {
         redirect_uri TEXT NOT NULL,
         expires_at TIMESTAMPTZ NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS aurex_sandbox_sessions (
+        id TEXT PRIMARY KEY,
+        owner_key TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT now(),
+        last_used_at TIMESTAMPTZ DEFAULT now(),
+        expires_at TIMESTAMPTZ NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS aurex_sandbox_sessions_owner
+        ON aurex_sandbox_sessions(owner_key);
+      CREATE TABLE IF NOT EXISTS aurex_sandbox_runs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        owner_key TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        language TEXT,
+        command_preview TEXT,
+        network TEXT NOT NULL,
+        status TEXT NOT NULL,
+        exit_code INTEGER,
+        timed_out BOOLEAN DEFAULT false,
+        oom_killed BOOLEAN DEFAULT false,
+        duration_ms INTEGER,
+        stdout_bytes INTEGER,
+        stderr_bytes INTEGER,
+        artifact_count INTEGER,
+        started_at TIMESTAMPTZ,
+        finished_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS aurex_sandbox_runs_owner_time
+        ON aurex_sandbox_runs(owner_key, started_at DESC);
     `);
     console.log('[Aurex DB] Postgres conectado e tabelas garantidas.');
   } catch (err) {
@@ -152,4 +186,82 @@ export async function revokeRefreshToken(token) {
     return;
   }
   memory.refreshTokens.delete(token);
+}
+
+// ---------- Sandbox: sessões e auditoria ----------
+// As tabelas da sandbox NÃO têm foreign key para aurex_users: um chamador
+// autenticado por API key não tem linha em aurex_users.
+
+export async function touchSandboxSession(sessionId, ownerKey, expiresAtMs) {
+  const expiresAt = new Date(expiresAtMs);
+  if (pool) {
+    await pool.query(
+      `INSERT INTO aurex_sandbox_sessions (id, owner_key, expires_at)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (id) DO UPDATE SET last_used_at = now(), expires_at = $3`,
+      [sessionId, ownerKey, expiresAt]
+    );
+    return;
+  }
+  memory.sandboxSessions.set(sessionId, {
+    ownerKey,
+    lastUsedAt: Date.now(),
+    expiresAt: expiresAt.getTime()
+  });
+}
+
+export async function listExpiredSandboxSessions() {
+  if (pool) {
+    const res = await pool.query(
+      'SELECT id, owner_key FROM aurex_sandbox_sessions WHERE expires_at < now()'
+    );
+    return res.rows.map((row) => ({ id: row.id, ownerKey: row.owner_key }));
+  }
+  const now = Date.now();
+  const expired = [];
+  for (const [id, entry] of memory.sandboxSessions.entries()) {
+    if (entry.expiresAt < now) expired.push({ id, ownerKey: entry.ownerKey });
+  }
+  return expired;
+}
+
+export async function deleteSandboxSession(sessionId) {
+  if (pool) {
+    await pool.query('DELETE FROM aurex_sandbox_sessions WHERE id = $1', [sessionId]);
+    return;
+  }
+  memory.sandboxSessions.delete(sessionId);
+}
+
+// Auditoria: guardamos o comando (útil num incidente), NUNCA a saída.
+export async function recordSandboxRun(run) {
+  if (pool) {
+    await pool.query(
+      `INSERT INTO aurex_sandbox_runs
+        (id, session_id, owner_key, kind, language, command_preview, network, status,
+         exit_code, timed_out, oom_killed, duration_ms, stdout_bytes, stderr_bytes,
+         artifact_count, started_at, finished_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+      [run.id, run.sessionId, run.ownerKey, run.kind, run.language, run.commandPreview,
+       run.network, run.status, run.exitCode, run.timedOut, run.oomKilled, run.durationMs,
+       run.stdoutBytes, run.stderrBytes, run.artifactCount, run.startedAt, run.finishedAt]
+    );
+    return;
+  }
+  memory.sandboxRuns.push(run);
+  if (memory.sandboxRuns.length > MEMORY_RUN_LIMIT) memory.sandboxRuns.shift();
+}
+
+export async function listRecentSandboxRuns(ownerKey, limit = 20) {
+  if (pool) {
+    const res = await pool.query(
+      'SELECT * FROM aurex_sandbox_runs WHERE owner_key = $1 ORDER BY started_at DESC LIMIT $2',
+      [ownerKey, limit]
+    );
+    return res.rows;
+  }
+  return memory.sandboxRuns
+    .filter((run) => run.ownerKey === ownerKey)
+    .slice(-limit)
+    .reverse();
 }
