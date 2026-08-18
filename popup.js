@@ -1703,7 +1703,23 @@ function appendToolResultToUI(msgDiv, result) {
   resultText.style.color = statusColor;
   resultText.textContent = originalMessage + ' ' + (result.success ? '(Feito)' : '(Falhou)');
   headerDiv.appendChild(resultText);
-  
+
+  // Evidência visível para o usuário: o que foi REALMENTE observado depois da
+  // ação. Sem isto, só o modelo enxerga a verificação e o usuário precisa
+  // confiar na palavra dele.
+  var evidence = buildVerificationEvidence(result);
+  if (evidence) {
+    var evidenceEl = document.createElement('div');
+    evidenceEl.className = 'tool-evidence' + (evidence.warning ? ' warn' : '');
+    var evidenceIcon = document.createElement('i');
+    evidenceIcon.className = evidence.warning ? 'fa-solid fa-triangle-exclamation' : 'fa-solid fa-eye';
+    evidenceEl.appendChild(evidenceIcon);
+    var evidenceText = document.createElement('span');
+    evidenceText.textContent = evidence.text;
+    evidenceEl.appendChild(evidenceText);
+    msgDiv.appendChild(evidenceEl);
+  }
+
   // Adiciona o resultado técnico no details
   const detailsDiv = msgDiv.querySelector('details div');
   
@@ -1719,6 +1735,52 @@ function appendToolResultToUI(msgDiv, result) {
   detailsDiv.appendChild(document.createElement('br'));
   detailsDiv.appendChild(document.createTextNode(resultStr));
   MotionUI.completeTool(msgDiv, result.success);
+}
+
+// Traduz a verificação técnica numa frase que o usuário entende, para ele
+// poder auditar o que o agente afirma ter feito.
+function buildVerificationEvidence(result) {
+  if (!result || typeof result !== 'object') return null;
+
+  // Digitação: o texto entrou mesmo no campo?
+  if (result.text_confirmed === false) {
+    return { warning: true, text: 'O texto não apareceu no campo — o foco pode ter se perdido.' };
+  }
+  if (result.text_confirmed === true) {
+    return { text: 'Confirmado: o texto entrou no campo.' };
+  }
+
+  // Clique/navegação: a página reagiu?
+  if (typeof result.effect === 'string' && result.effect) {
+    if (/nenhuma mudanca detectada/i.test(result.effect)) {
+      return { warning: true, text: 'Nenhuma mudança detectada na página após a ação.' };
+    }
+    if (result.effect !== 'nao verificado') {
+      return { text: 'Verificado: ' + result.effect.split(';')[0] + '.' };
+    }
+  }
+
+  // wait_for: condição observada ou estourou o tempo
+  if (result.condition) {
+    if (result.success) {
+      return { text: 'Condição confirmada em ' + (result.waited_ms || 0) + 'ms.' };
+    }
+    return { warning: true, text: 'A condição não se cumpriu em ' + (result.waited_ms || 0) + 'ms.' };
+  }
+
+  // find_element: houve ambiguidade entre candidatos?
+  if (result.confidence === 'ambigua') {
+    return { warning: true, text: 'Mais de um elemento parecido — o alvo pode estar errado.' };
+  }
+
+  // Sandbox: o que foi produzido
+  if (Array.isArray(result.artifacts) && result.artifacts.length) {
+    return { text: 'Arquivo(s) gerado(s): ' + result.artifacts.map(function (a) { return a.path; }).join(', ') };
+  }
+  if (result.timed_out) return { warning: true, text: 'A execução estourou o tempo limite.' };
+  if (result.oom_killed) return { warning: true, text: 'A execução estourou o limite de memória.' };
+
+  return null;
 }
 
 // Teto de caracteres para o resultado de UMA ferramenta no histórico.
@@ -3403,7 +3465,7 @@ async function executeWebSearch(args) {
     });
     if (!gemRes.ok) {
       var errText = await gemRes.text();
-      return { success: false, error: "Gemini respondeu " + gemRes.status + ": " + errText.substring(0, 300) };
+      return { success: false, error: scrubSecrets("Gemini respondeu " + gemRes.status + ": " + errText.substring(0, 300)) };
     }
     var gemData = await gemRes.json();
     var candidate = (gemData.candidates || [])[0] || {};
@@ -3415,7 +3477,7 @@ async function executeWebSearch(args) {
     }).filter(Boolean).slice(0, count);
     return { success: true, provider: 'gemini', query: query, answer: answer, results: sources };
   } catch (err) {
-    return { success: false, error: "Falha na busca: " + err.message };
+    return { success: false, error: scrubSecrets("Falha na busca: " + err.message) };
   }
 }
 
@@ -3508,7 +3570,7 @@ async function executeGooglePlaces(args) {
         headers: { 'X-Goog-Api-Key': key, 'X-Goog-FieldMask': detailFields }
       });
       var detText = await detRes.text();
-      if (!detRes.ok) return { success: false, error: "Places API respondeu " + detRes.status, body: detText.substring(0, 400) };
+      if (!detRes.ok) return { success: false, error: "Places API respondeu " + detRes.status, body: scrubSecrets(detText.substring(0, 400)) };
       return { success: true, command: command, place: JSON.parse(detText) };
     }
 
@@ -3545,7 +3607,7 @@ async function executeGooglePlaces(args) {
       body: JSON.stringify(payload)
     });
     var text = await res.text();
-    if (!res.ok) return { success: false, error: "Places API respondeu " + res.status, body: text.substring(0, 400) };
+    if (!res.ok) return { success: false, error: "Places API respondeu " + res.status, body: scrubSecrets(text.substring(0, 400)) };
 
     var data = JSON.parse(text);
     var places = (data.places || []).map(function (p) {
@@ -3563,7 +3625,7 @@ async function executeGooglePlaces(args) {
     });
     return { success: true, command: command, count: places.length, places: places };
   } catch (err) {
-    return { success: false, error: "Falha na Places API: " + err.message };
+    return { success: false, error: scrubSecrets("Falha na Places API: " + err.message) };
   }
 }
 
@@ -3653,6 +3715,35 @@ async function executeSandboxFiles(args) {
   }
 }
 
+// Remove qualquer chave configurada do texto antes de ele chegar ao modelo.
+// Injetar a chave só no host dono dela não basta: a resposta pode ecoá-la
+// (mensagens de erro de várias APIs incluem a chave recebida).
+function collectConfiguredSecrets() {
+  var secrets = [];
+  try {
+    getApiIntegrations().forEach(function (item) { if (item.key) secrets.push(item.key); });
+  } catch (e) { /* integrações ilegíveis: seguimos com o resto */ }
+  [
+    localStorage.getItem('aurex_search_key'),
+    localStorage.getItem('aurex_places_key'),
+    localStorage.getItem('aurex_api_key')
+  ].forEach(function (value) {
+    if (value && value.trim()) secrets.push(value.trim());
+  });
+  // Só faz sentido mascarar segredos com tamanho real; strings curtas
+  // gerariam substituições acidentais no meio de palavras.
+  return secrets.filter(function (s) { return s.length >= 12; });
+}
+
+function scrubSecrets(text) {
+  if (typeof text !== 'string' || !text) return text;
+  var out = text;
+  collectConfiguredSecrets().forEach(function (secret) {
+    out = out.split(secret).join('[CHAVE OCULTADA]');
+  });
+  return out;
+}
+
 // Executa a chamada de API injetando a chave do usuário no host correspondente.
 async function executeApiRequest(args) {
   var rawUrl = String(args.url || '').trim();
@@ -3692,7 +3783,9 @@ async function executeApiRequest(args) {
     var response = await fetch(url.toString(), init);
     var text = await response.text();
     if (text.length > 20000) text = text.substring(0, 20000) + '... [TRUNCADO]';
-    // Nunca ecoamos a URL final (contém a chave) de volta para o modelo
+    // Nem a URL final nem o corpo da resposta podem carregar a chave de volta:
+    // várias APIs (Google entre elas) ecoam a chave em mensagens de erro.
+    text = scrubSecrets(text);
     if (!response.ok) {
       return { success: false, status: response.status, error: "A API respondeu " + response.status, body: text };
     }
@@ -3700,7 +3793,7 @@ async function executeApiRequest(args) {
     try { data = JSON.parse(text); } catch (e) { data = text; }
     return { success: true, status: response.status, host: url.hostname, data: data };
   } catch (err) {
-    return { success: false, error: "Falha na chamada a API: " + err.message };
+    return { success: false, error: "Falha na chamada a API: " + scrubSecrets(err.message) };
   }
 }
 

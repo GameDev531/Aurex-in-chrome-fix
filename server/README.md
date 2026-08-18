@@ -103,15 +103,33 @@ privilégios, rootfs read-only, `--cap-drop ALL`, `no-new-privileges`, limites d
 memória/CPU/PIDs e timeout duplo (dentro e fora do container). O comando do
 usuário viaja como argumento de argv, nunca interpolado numa string de shell.
 
-O workspace de cada conversa é um diretório persistente montado em `/work`;
-`pip install` e `npm install` são direcionados para dentro dele, então instalar
-numa execução e usar na seguinte funciona.
+O workspace de cada conversa é um diretório persistente montado em `/work`.
+
+**Sobre instalar pacotes — leia com atenção:** `PIP_USER` e `NPM_CONFIG_PREFIX`
+apontam para dentro de `/work`, o que garante que um pacote instalado **sobreviva
+ao descarte do container**. Isso resolve a *persistência*, não o *download*: com
+`--network none` (o padrão), `pip install` **falha**, porque não há como alcançar
+o PyPI. Ou seja:
+
+| Configuração | `pip install` baixa? | Pacote sobrevive entre execuções? |
+|---|---|---|
+| `AUREX_SANDBOX_ALLOW_NETWORK=false` (padrão) | Não | — |
+| `AUREX_SANDBOX_ALLOW_NETWORK=true` | Sim | Sim |
+
+Por isso a imagem já traz as bibliotecas que cobrem os casos de uso previstos
+(documentos, planilhas, PDFs, gráficos, dados). Se você precisa de algo fora
+dessa lista, tem duas saídas: **adicionar ao `requirements.txt` e reconstruir a
+imagem** (recomendado — mantém o container sem rede), ou ligar
+`AUREX_SANDBOX_ALLOW_NETWORK=true` aceitando o risco descrito abaixo.
 
 ### Limitações honestas
 
-- **Sem rede no container.** O que a imagem não trouxer, não roda. Isso é
-  deliberado: o container processa conteúdo lido de páginas web, e dar saída de
-  rede a ele criaria um canal de exfiltração.
+- **Sem rede no container, por padrão.** O que a imagem não trouxer, não roda —
+  inclusive `pip install`. Isso é deliberado: o container processa conteúdo lido
+  de páginas web, e dar saída de rede a ele criaria um canal de exfiltração.
+  Ligar a rede hoje é tudo-ou-nada (bridge padrão do Docker), o que também dá ao
+  container acesso à sua rede local. Uma allowlist só para PyPI/npm via proxy de
+  egresso é o próximo passo natural, e ainda **não** está implementada.
 - **Pertencer ao grupo `docker` equivale a root no host.** Se o processo Node
   for comprometido, o isolamento do *sandbox* não protege o *host*. A mitigação
   real é **Docker rootless** — motivo pelo qual a sandbox nasce desligada e se

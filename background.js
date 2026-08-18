@@ -122,6 +122,52 @@ function filterAXTree(nodes, frameId) {
   });
 }
 
+// Envia um comando CDP diretamente a um TARGET (não à aba).
+// Necessário para iframes cross-origin: eles rodam num processo separado
+// (OOPIF) e a sessão da aba não alcança a árvore deles.
+function executeCDPOnTarget(targetId, command, params = {}) {
+  return new Promise((resolve, reject) => {
+    chrome.debugger.sendCommand({ targetId: targetId }, command, params, (result) => {
+      if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
+      resolve(result);
+    });
+  });
+}
+
+function attachToTarget(targetId) {
+  return new Promise((resolve, reject) => {
+    chrome.debugger.attach({ targetId: targetId }, "1.3", () => {
+      if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
+      resolve();
+    });
+  });
+}
+
+function detachTarget(targetId) {
+  return new Promise((resolve) => {
+    chrome.debugger.detach({ targetId: targetId }, () => {
+      void chrome.runtime.lastError; // já desanexado é aceitável
+      resolve();
+    });
+  });
+}
+
+// Última tentativa para um frame cross-origin: anexar ao target do próprio
+// iframe. Para OOPIFs o targetId coincide com o frameId.
+async function readAXTreeViaTarget(frameId) {
+  var attached = false;
+  try {
+    await attachToTarget(frameId);
+    attached = true;
+    var res = await executeCDPOnTarget(frameId, "Accessibility.getFullAXTree");
+    return filterAXTree(res.nodes || [], frameId);
+  } catch (e) {
+    return [];
+  } finally {
+    if (attached) await detachTarget(frameId);
+  }
+}
+
 // Lê a árvore de acessibilidade de TODOS os frames da aba, não só do principal.
 // Sem isto, conteúdo dentro de iframe (comum em LMS, players de PDF e
 // checkouts) fica invisível para clique e digitação.
@@ -142,6 +188,7 @@ async function getAccessibilityTreeAllFrames(tabId) {
 
   var combined = [];
   var framesRead = 0;
+  var crossOriginFrames = 0;
 
   if (frameIds.length === 0) {
     var main = await executeCDPCommand(tabId, "Accessibility.getFullAXTree");
@@ -149,15 +196,24 @@ async function getAccessibilityTreeAllFrames(tabId) {
     framesRead = 1;
   } else {
     for (var i = 0; i < frameIds.length; i++) {
+      var nodes = [];
       try {
         var res = await executeCDPCommand(tabId, "Accessibility.getFullAXTree", { frameId: frameIds[i] });
-        var nodes = filterAXTree(res.nodes || [], frameIds[i]);
-        if (nodes.length) {
-          combined = combined.concat(nodes);
-          framesRead++;
-        }
+        nodes = filterAXTree(res.nodes || [], frameIds[i]);
       } catch (e) {
-        // Frame cross-origin fora de alcance ou já destruído: ignora e segue
+        nodes = []; // provavelmente OOPIF: tratado abaixo
+      }
+
+      // Frame que não respondeu pela sessão da aba costuma ser cross-origin.
+      // Tentamos alcançá-lo pelo target dele antes de desistir.
+      if (!nodes.length && i > 0) {
+        nodes = await readAXTreeViaTarget(frameIds[i]);
+        if (nodes.length) crossOriginFrames++;
+      }
+
+      if (nodes.length) {
+        combined = combined.concat(nodes);
+        framesRead++;
       }
     }
   }
@@ -173,7 +229,12 @@ async function getAccessibilityTreeAllFrames(tabId) {
     unique.push(combined[j]);
   }
 
-  return { tree: unique, framesRead: framesRead, framesTotal: frameIds.length || 1 };
+  return {
+    tree: unique,
+    framesRead: framesRead,
+    framesTotal: frameIds.length || 1,
+    crossOriginFrames: crossOriginFrames
+  };
 }
 
 // ========== ELEMENT RESOLVER ==========
