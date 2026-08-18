@@ -302,9 +302,16 @@ var SYSTEM_PROMPT = "Voc\u00ea \u00e9 o Aurex, um Web Agent inteligente integrad
 "1. SEMPRE use primeiro o command='get_accessibility_tree'. A \u00e1rvore de acessibilidade \u00e9 concisa e sem\u00e2ntica.\n" +
 "2. Se a \u00e1rvore vier vazia ou precisar de contexto visual, use 'capture_screenshot'.\n\n" +
 "QUANDO O USU\u00c1RIO PEDIR PARA INTERAGIR (CLICAR/DIGITAR):\n" +
-"1. Leia a \u00e1rvore de acessibilidade.\n" +
-"2. Identifique o n\u00f3 alvo (button, link, textbox) e extraia seu id (backendDOMNodeId).\n" +
-"3. Use command='simulate_click' ou command='simulate_type' passando o id exato do n\u00f3.\n\n" +
+"1. Use find_element com uma descri\u00e7\u00e3o natural do alvo ('botao Entrar', 'campo de email'). \u00c9 mais confi\u00e1vel e muito mais barato que ler a \u00e1rvore inteira.\n" +
+"2. Pegue o id do melhor candidato. Se a confian\u00e7a vier 'ambigua', confira os candidatos antes de agir \u2014 e se ainda houver d\u00favida em a\u00e7\u00e3o sens\u00edvel, pergunte ao usu\u00e1rio.\n" +
+"3. Use command='simulate_click' ou command='simulate_type' com esse id.\n" +
+"4. CONFIRME o resultado: leia o campo 'effect' devolvido pela a\u00e7\u00e3o e, quando o efeito esperado for espec\u00edfico (uma p\u00e1gina abrir, um aviso sumir, um texto aparecer), use wait_for para verificar de fato.\n" +
+"5. S\u00f3 use get_accessibility_tree quando precisar de um panorama da p\u00e1gina; para achar um alvo espec\u00edfico, find_element \u00e9 o caminho.\n\n" +
+"# VERIFICA\u00c7\u00c3O OBRIGAT\u00d3RIA (REGRA CR\u00cdTICA)\n" +
+"NUNCA declare uma tarefa conclu\u00edda apenas porque a ferramenta n\u00e3o retornou erro. Uma a\u00e7\u00e3o s\u00f3 est\u00e1 conclu\u00edda quando voc\u00ea OBSERVOU evid\u00eancia do resultado esperado.\n" +
+"- Ap\u00f3s clicar/digitar, verifique o campo 'effect'. Se ele disser que nenhuma mudan\u00e7a foi detectada, a a\u00e7\u00e3o provavelmente N\u00c3O funcionou: releia a p\u00e1gina e tente outro alvo, em vez de seguir em frente.\n" +
+"- Ap\u00f3s digitar, verifique 'text_confirmed'. Se vier false, o foco se perdeu e o texto n\u00e3o entrou no campo.\n" +
+"- Se wait_for falhar, a etapa N\u00c3O foi conclu\u00edda. Investigue e diga a verdade ao usu\u00e1rio sobre o que travou \u2014 nunca invente um resultado.\n\n" +
 "QUANDO FOR PESQUISAR NO GOOGLE:\n" +
 "1. Use dom_action com command='navigate' com value='https://www.google.com' para abrir o Google.\n" +
 "2. Use command='wait' com value='2000' para esperar carregar.\n" +
@@ -395,6 +402,43 @@ const TOOLS = [
           }
         },
         required: ["command"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "find_element",
+      description: "BROWSER TOOL: localiza um elemento na pagina a partir de uma descricao em linguagem natural (ex: 'o botao de login', 'campo de pesquisa', 'link Baixar material'). Devolve os melhores candidatos com id, rotulo e pontuacao de confianca. USE ESTA FERRAMENTA ANTES DE CLICAR OU DIGITAR: e mais confiavel e MUITO mais barata que despejar a arvore inteira com get_accessibility_tree. Enxerga tambem elementos dentro de iframes.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Descricao do elemento como aparece para o usuario. Ex: 'botao Entrar', 'campo de email'" },
+          role: { type: "string", description: "Opcional: restringe o tipo — button, link, textbox, searchbox, combobox, checkbox, tab" },
+          limit: { type: "number", description: "Quantos candidatos retornar (padrao 3)" }
+        },
+        required: ["query"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "wait_for",
+      description: "BROWSER TOOL: espera ate que uma condicao seja observada na pagina, com timeout. E o 'assert' do Aurex — use DEPOIS de clicar, enviar formulario ou navegar para CONFIRMAR que a acao realmente funcionou, em vez de supor. Se a condicao nao se cumprir, a ferramenta falha e voce deve investigar em vez de declarar a tarefa concluida.",
+      parameters: {
+        type: "object",
+        properties: {
+          condition: {
+            type: "string",
+            enum: ["text_present", "text_absent", "element_visible", "element_gone", "url_matches", "url_changed", "title_changed"],
+            description: "text_present/absent: procura um texto na pagina; element_visible/gone: usa o id de um elemento; url_matches: URL contem o valor; url_changed/title_changed: compara com o valor anterior informado"
+          },
+          value: { type: "string", description: "Texto, trecho de URL ou valor anterior, conforme a condicao" },
+          id: { type: "string", description: "ID do elemento (element_visible / element_gone)" },
+          timeout_ms: { type: "number", description: "Tempo maximo de espera em ms (padrao 10000, maximo 60000)" }
+        },
+        required: ["condition"]
       }
     }
   },
@@ -1500,6 +1544,18 @@ function appendToolCallToUI(name, args) {
     else if (args.command === "switch_tab") humanMessage = "🔄 Mudando para aba: " + args.tabId;
     else if (args.command === "close_tab") humanMessage = "❌ Fechando aba: " + args.tabId;
   }
+  else if (name === "find_element") {
+    humanMessage = "🎯 Localizando na página: " + (args.query || "");
+  }
+  else if (name === "wait_for") {
+    var condLabels = {
+      text_present: "o texto aparecer", text_absent: "o texto sumir",
+      element_visible: "o elemento aparecer", element_gone: "o elemento sumir",
+      url_matches: "a URL bater", url_changed: "a página mudar", title_changed: "o título mudar"
+    };
+    humanMessage = "⏱️ Aguardando " + (condLabels[args.condition] || args.condition) +
+      (args.value ? ": " + String(args.value).substring(0, 40) : "") + "...";
+  }
   else if (name === "web_search") {
     humanMessage = "🔎 Pesquisando na web: " + (args.query || "");
   }
@@ -2584,6 +2640,16 @@ function executeToolInBrowser(name, args) {
       } else {
         resolve({ success: false, error: "Comando tab_manager desconhecido" });
       }
+    } else if (name === "find_element" || name === "wait_for") {
+      // Ferramentas de nível superior que rodam via CDP no background
+      var debuggerPayload = Object.assign({ command: name }, args);
+      chrome.runtime.sendMessage({ action: "debugger_action", payload: debuggerPayload }, function (response) {
+        if (chrome.runtime.lastError) {
+          resolve({ success: false, error: chrome.runtime.lastError.message });
+        } else {
+          resolve(response);
+        }
+      });
     } else if (name === "web_search") {
       executeWebSearch(args).then(resolve);
     } else if (name === "web_fetch") {
