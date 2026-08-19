@@ -2258,3 +2258,65 @@ body.temp-chat .temp-chat-pill { display: inline-flex; }
   background: rgba(229, 179, 105, 0.10);
   border-color: rgba(229, 179, 105, 0.28);
 }
+
+/* --- Botão "sempre permitir" no banner de permissão --- */
+.permission-banner-actions .btn-always-origin {
+  background: rgba(224, 180, 134, 0.12);
+  border-color: rgba(224, 180, 134, 0.35);
+  color: var(--text-accent);
+}
+.permission-banner-actions .btn-always-origin:hover {
+  background: rgba(224, 180, 134, 0.2);
+}
+.permission-banner-actions button { font-size: 11.5px; padding: 8px 8px; }
+
+/* --- Escopo do site aprovado (sessão x sempre) --- */
+.approved-site-scope {
+  font-size: 10.5px;
+  color: var(--text-muted, #6b6f7d);
+  margin-top: 2px;
+}
+
+/* --- Alerta de mudança de domínio (anti-phishing) --- */
+.domain-shift-banner {
+  position: relative;
+  margin-top: 10px;
+  padding: 12px 34px 12px 14px;
+  border-radius: var(--radius-lg, 18px);
+  background: linear-gradient(160deg, rgba(229, 179, 105, 0.12), rgba(27, 30, 38, 0.94));
+  border: 1px solid rgba(229, 179, 105, 0.4);
+  box-shadow: var(--shadow-md);
+}
+.domain-shift-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-text-warning, #e5b369);
+}
+.domain-shift-body {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.domain-shift-body b { color: var(--text-accent); font-weight: 600; }
+.domain-shift-sub {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--text-muted, #6b6f7d);
+  line-height: 1.45;
+}
+.domain-shift-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted, #6b6f7d);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+.domain-shift-close:hover { color: var(--text-primary); }

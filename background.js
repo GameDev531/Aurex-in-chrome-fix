@@ -822,7 +822,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // Revogar permissão de uma origem aprovada (a partir das Configurações)
   if (request.type === "revoke_permission") {
-    PermissionManager.revokePermission(request.origin).then(() => {
+    // Revoga nas duas listas: sessão e permanente
+    Promise.all([
+      PermissionManager.revokePermission(request.origin),
+      PermissionManager.untrustOrigin(request.origin)
+    ]).then(() => {
       sendResponse({ success: true });
     });
     return true;
@@ -848,10 +852,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.type === "grant_permission") {
-      PermissionManager.grantPermission(request.origin).then(() => {
-        PermissionManager.resolvePending(request.origin, true);
-        sendResponse({ success: true });
-      });
+      // "sempre permitir" grava também na lista permanente
+      const persist = request.scope === 'always'
+        ? PermissionManager.trustOriginForever(request.origin)
+        : Promise.resolve();
+      persist
+        .then(() => PermissionManager.grantPermission(request.origin))
+        .then(() => {
+          PermissionManager.resolvePending(request.origin, true);
+          sendResponse({ success: true, scope: request.scope || 'session' });
+        });
     } else {
       // deny_permission
       PermissionManager.resolvePending(request.origin, false);

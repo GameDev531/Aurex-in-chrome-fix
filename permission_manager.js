@@ -1,6 +1,10 @@
 export class PermissionManager {
   static _memoryFallback = [];
 
+  // Duas listas com tempos de vida diferentes:
+  // - sessão (chrome.storage.session): "só desta vez", some ao fechar o Chrome
+  // - permanente (chrome.storage.local): "sempre permitir", escolha explícita
+  //   do usuário e revogável nas Configurações
   static async getAllowlist() {
     return new Promise((resolve) => {
       if (chrome.storage.session) {
@@ -13,8 +17,37 @@ export class PermissionManager {
     });
   }
 
+  static async getPersistentAllowlist() {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(['aurex_trusted_origins'], (result) => {
+        resolve((result && result.aurex_trusted_origins) || []);
+      });
+    });
+  }
+
+  static async trustOriginForever(origin) {
+    if (!origin || origin === 'null') return;
+    const trusted = await this.getPersistentAllowlist();
+    if (!trusted.includes(origin)) {
+      trusted.push(origin);
+      await new Promise((resolve) => {
+        chrome.storage.local.set({ aurex_trusted_origins: trusted }, resolve);
+      });
+    }
+  }
+
+  static async untrustOrigin(origin) {
+    const trusted = await this.getPersistentAllowlist();
+    const next = trusted.filter((o) => o !== origin);
+    await new Promise((resolve) => {
+      chrome.storage.local.set({ aurex_trusted_origins: next }, resolve);
+    });
+  }
+
   static async checkPermission(origin) {
     if (!origin || origin === 'null') return true; // Local files or extensions might have null origin
+    const trusted = await this.getPersistentAllowlist();
+    if (trusted.includes(origin)) return true;
     const allowlist = await this.getAllowlist();
     return allowlist.includes(origin);
   }

@@ -636,6 +636,81 @@ const TOOLS = [
   }
 ];
 
+// ========== CLASSIFICAÇÃO DE FERRAMENTAS (SEGURANÇA ESTRUTURAL) ==========
+// "read"  — só observa; não altera nada no mundo.
+// "write" — muda o estado de uma página, aba, arquivo ou serviço.
+//
+// Em modo Plano, as ferramentas de escrita NÃO são enviadas ao modelo. Isso
+// torna o plano um dry-run garantido pela estrutura: uma injeção de prompt
+// numa página não consegue burlar, porque o modelo simplesmente não tem a
+// ferramenta na mão — diferente de uma regra no texto, que é só um pedido.
+const TOOL_ACCESS = {
+  // Leitura
+  find_element: "read",
+  wait_for: "read",
+  capture_screenshot: "read",
+  web_search: "read",
+  web_fetch: "read",
+  extract_page: "read",
+  google_places: "read",
+  task_memory: "read",
+  // Escrita
+  save_markdown_file: "write",  // grava na pasta Downloads do usuário
+  tab_manager: "write",         // abre, troca e fecha abas
+  api_request: "write",         // pode fazer POST em serviços externos
+  run_command: "write",         // executa código
+  run_code: "write",
+  sandbox_files: "write",       // grava e apaga arquivos
+  // dom_action é misto: resolvido por comando (ver toolAccessFor)
+  dom_action: "mixed"
+};
+
+// Comandos de dom_action que apenas leem a página
+const DOM_ACTION_READ_COMMANDS = new Set([
+  "get_accessibility_tree", "read_dom", "scroll", "wait", "get_element_text"
+]);
+
+function toolAccessFor(name, args) {
+  var access = TOOL_ACCESS[name];
+  if (access !== "mixed") return access || "write"; // desconhecido = trate como escrita
+  var command = args && args.command;
+  return DOM_ACTION_READ_COMMANDS.has(command) ? "read" : "write";
+}
+
+// Em modo Plano, o bloqueio vale ATÉ o usuário aprovar o plano. Depois disso
+// a conversa fica liberada para executar — senão o modo seria inútil.
+var _planApproved = false;
+
+function isWriteBlocked() {
+  return getAurexMode() === 'plan' && !_planApproved;
+}
+
+function approvePlanForConversation() {
+  _planApproved = true;
+}
+
+// Monta o conjunto de ferramentas que o modelo recebe nesta requisição.
+function toolsForMode(mode) {
+  if (mode !== "plan" || _planApproved) return TOOLS;
+
+  return TOOLS.filter(function (tool) {
+    var name = tool.function && tool.function.name;
+    // dom_action entra em modo Plano com os comandos de escrita removidos do
+    // enum: o modelo consegue ler a página para montar o plano, mas não age.
+    if (name === "dom_action") return true;
+    return TOOL_ACCESS[name] === "read";
+  }).map(function (tool) {
+    if (tool.function.name !== "dom_action") return tool;
+    var readOnly = JSON.parse(JSON.stringify(tool));
+    var commandProp = readOnly.function.parameters.properties.command;
+    commandProp.enum = commandProp.enum.filter(function (c) { return DOM_ACTION_READ_COMMANDS.has(c); });
+    commandProp.description = "O comando a executar. MODO PLANO: apenas leitura disponivel.";
+    readOnly.function.description = "Le a pagina web ativa. MODO PLANO: comandos de interacao " +
+      "(clicar, digitar, navegar) estao indisponiveis ate o usuario aprovar o plano.";
+    return readOnly;
+  });
+}
+
 let chatHistory = [
   { role: "system", content: SYSTEM_PROMPT }
 ];
@@ -1059,6 +1134,7 @@ function loadChat(id) {
   const chat = savedChats.find(c => c.id === id);
   if (!chat) return;
   setTempChatState(false); // Abrir um chat salvo sai do modo temporário
+  _planApproved = false;   // retomar conversa exige nova aprovação
   currentChatId = chat.id;
   chatHistory = chat.history;
   document.getElementById('messages-container').innerHTML = '';
@@ -1094,6 +1170,8 @@ function setDynamicGreeting() {
 // Reseta a UI para um chat novo (usado pelo "Novo Chat" e pelo chat temporário)
 function resetChatUI() {
   currentChatId = Date.now().toString();
+  _planApproved = false; // conversa nova volta a exigir aprovação do plano
+  resetTaskOrigin();     // e volta a vigiar o domínio do zero
   chatHistory = [{ role: "system", content: SYSTEM_PROMPT }];
   let newTask = localStorage.getItem("aurex_active_task");
   if (newTask) chatHistory[0].content += "\n\n# MEMORIA DA TAREFA ATIVA:\n" + newTask;
@@ -1436,6 +1514,13 @@ function renderWidgetContent(htmlContent, container) {
         this.classList.contains('q-submit-secondary') ||
         !!this.closest('.plan-widget') ||
         (promptText && promptText.indexOf('Plano aprovado') !== -1);
+
+      // Aprovar o plano é o que destrava as ferramentas de escrita nesta
+      // conversa. Enquanto o usuário não clicar aqui, o modelo só consegue ler.
+      if (promptText && /plano aprovado/i.test(promptText)) {
+        approvePlanForConversation();
+      }
+
       if (isDecision) {
         var containerWidget = this.closest('.aurex-widget');
         if (containerWidget) {
@@ -2098,7 +2183,7 @@ async function processLLMLoop(iterationCount = 0) {
       body: JSON.stringify({
         model: "AurexAI",
         messages: requestMessages,
-        tools: TOOLS,
+        tools: toolsForMode(getAurexMode()),
         temperature: 0.2
       })
     });
@@ -2269,6 +2354,11 @@ async function processLLMLoop(iterationCount = 0) {
 
           // Atualiza o card de Tool UI com o resultado
           appendToolResultToUI(toolUiNode, result);
+
+          // Vigia a troca de domínio a cada leitura de página
+          if (result && result.success && typeof result.url === 'string') {
+            checkDomainShift(result.url);
+          }
           
           if (name === "capture_screenshot" && result.dataUrl) {
             capturedDataUrl = result.dataUrl;
@@ -2633,6 +2723,19 @@ function sendToContentScript(tabId, payload) {
 
 function executeToolInBrowser(name, args) {
   return new Promise((resolve) => {
+    // Trava em tempo de execução: mesmo que uma ferramenta de escrita chegue
+    // aqui em modo Plano (histórico antigo, modelo insistente, injeção na
+    // página), ela não executa. O filtro do payload é a primeira barreira;
+    // esta é a segunda.
+    if (isWriteBlocked() && toolAccessFor(name, args) === "write") {
+      resolve({
+        success: false,
+        error: "BLOQUEADO PELO MODO PLANO: acoes que alteram algo estao desativadas ate o usuario aprovar o plano.",
+        hint: "Apresente o plano ao usuario e aguarde a aprovacao. Voce ainda pode LER a pagina, pesquisar e inspecionar para montar o plano."
+      });
+      return;
+    }
+
     if (name === "dom_action") {
 
       if (args.command === "wait") {
@@ -2908,7 +3011,11 @@ function setupModeSelector() {
 
   menu.querySelectorAll('.mode-option').forEach(function (opt) {
     opt.addEventListener('click', function () {
-      setAurexMode(opt.getAttribute('data-mode'));
+      var chosen = opt.getAttribute('data-mode');
+      // Voltar para o modo Plano volta a exigir aprovação, mesmo que um plano
+      // já tenha sido aprovado antes nesta conversa.
+      if (chosen === 'plan') _planApproved = false;
+      setAurexMode(chosen);
       refreshActive();
       menu.classList.add('hidden');
     });
@@ -3116,30 +3223,50 @@ function renderApprovedSites() {
     list.innerHTML = '<div class="approved-sites-empty">' + escapeHtml(t('settings.sites.empty')) + '</div>';
     return;
   }
-  chrome.storage.session.get(['aurex_allowed_origins'], function (result) {
-    var origins = (result && result.aurex_allowed_origins) || [];
-    list.innerHTML = '';
-    if (origins.length === 0) {
-      list.innerHTML = '<div class="approved-sites-empty">' + escapeHtml(t('settings.sites.empty')) + '</div>';
-      return;
-    }
-    origins.forEach(function (origin) {
-      var item = document.createElement('div');
-      item.className = 'approved-site-item';
-      var span = document.createElement('span');
-      span.textContent = origin;
-      var btn = document.createElement('button');
-      btn.className = 'action-btn danger';
-      btn.textContent = t('settings.sites.revoke');
-      btn.addEventListener('click', function () {
-        chrome.runtime.sendMessage({ type: 'revoke_permission', origin: origin }, function () {
-          void chrome.runtime.lastError;
-          renderApprovedSites();
-        });
+  chrome.storage.session.get(['aurex_allowed_origins'], function (sessionResult) {
+    chrome.storage.local.get(['aurex_trusted_origins'], function (localResult) {
+      var sessionOrigins = (sessionResult && sessionResult.aurex_allowed_origins) || [];
+      var trustedOrigins = (localResult && localResult.aurex_trusted_origins) || [];
+
+      // Um site confiado permanentemente aparece uma vez só, marcado como tal
+      var all = trustedOrigins.map(function (o) { return { origin: o, always: true }; });
+      sessionOrigins.forEach(function (o) {
+        if (trustedOrigins.indexOf(o) === -1) all.push({ origin: o, always: false });
       });
-      item.appendChild(span);
-      item.appendChild(btn);
-      list.appendChild(item);
+
+      list.innerHTML = '';
+      if (all.length === 0) {
+        list.innerHTML = '<div class="approved-sites-empty">' + escapeHtml(t('settings.sites.empty')) + '</div>';
+        return;
+      }
+
+      all.forEach(function (entry) {
+        var item = document.createElement('div');
+        item.className = 'approved-site-item';
+
+        var info = document.createElement('div');
+        var span = document.createElement('div');
+        span.textContent = entry.origin;
+        info.appendChild(span);
+        var scopeLabel = document.createElement('div');
+        scopeLabel.className = 'approved-site-scope';
+        scopeLabel.textContent = entry.always ? t('settings.sites.always') : t('settings.sites.session');
+        info.appendChild(scopeLabel);
+
+        var btn = document.createElement('button');
+        btn.className = 'action-btn danger';
+        btn.textContent = t('settings.sites.revoke');
+        btn.addEventListener('click', function () {
+          chrome.runtime.sendMessage({ type: 'revoke_permission', origin: entry.origin }, function () {
+            void chrome.runtime.lastError;
+            renderApprovedSites();
+          });
+        });
+
+        item.appendChild(info);
+        item.appendChild(btn);
+        list.appendChild(item);
+      });
     });
   });
 }
@@ -4478,6 +4605,103 @@ function renderSkillsLists() {
   }
 }
 
+// ========== ALERTA DE MUDANÇA DE DOMÍNIO ==========
+// Uma tarefa que começa num site e termina em outro é o padrão clássico de
+// phishing e de injeção que redireciona o agente. O usuário precisa ver isso.
+var _taskOriginHost = null;
+
+function hostFromUrl(url) {
+  try { return new URL(url).hostname; } catch (e) { return null; }
+}
+
+// Sufixos públicos compostos: sem esta lista, "banco.com.br" reduziria a
+// "com.br" e QUALQUER outro site .com.br passaria como sendo o mesmo dono —
+// um falso negativo grave justamente no domínio mais comum do público local.
+var COMPOUND_SUFFIXES = new Set([
+  'com.br', 'net.br', 'org.br', 'edu.br', 'gov.br', 'jus.br', 'mil.br', 'art.br',
+  'com.pt', 'com.ar', 'com.mx', 'com.co', 'com.uy', 'com.py',
+  'co.uk', 'org.uk', 'ac.uk', 'gov.uk',
+  'com.au', 'net.au', 'org.au', 'edu.au',
+  'co.jp', 'or.jp', 'ne.jp', 'co.kr', 'co.in', 'co.za', 'co.nz'
+]);
+
+// Subdomínios do mesmo dono (login.exemplo.com vs exemplo.com) não devem
+// gerar alarme falso a cada etapa de um fluxo normal de login.
+function registrableRoot(host) {
+  if (!host) return null;
+  var parts = String(host).toLowerCase().split('.');
+  if (parts.length <= 2) return parts.join('.');
+
+  var lastTwo = parts.slice(-2).join('.');
+  // Sufixo composto: o domínio registrável tem três rótulos (ex: unicesumar.edu.br)
+  if (COMPOUND_SUFFIXES.has(lastTwo)) {
+    return parts.slice(-3).join('.');
+  }
+  return lastTwo;
+}
+
+function resetTaskOrigin() {
+  _taskOriginHost = null;
+  var banner = document.getElementById('domain-shift-banner');
+  if (banner) banner.remove();
+}
+
+function checkDomainShift(url) {
+  var host = hostFromUrl(url);
+  if (!host) return;
+  if (!_taskOriginHost) { _taskOriginHost = host; return; }
+  if (registrableRoot(host) === registrableRoot(_taskOriginHost)) return;
+
+  var area = document.getElementById('permission-banner-area');
+  if (!area) return;
+
+  var existing = document.getElementById('domain-shift-banner');
+  if (existing) {
+    if (existing.dataset.host === host) return; // já avisamos deste
+    existing.remove();
+  }
+
+  var banner = document.createElement('div');
+  banner.className = 'domain-shift-banner';
+  banner.id = 'domain-shift-banner';
+  banner.dataset.host = host;
+
+  var head = document.createElement('div');
+  head.className = 'domain-shift-head';
+  head.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
+  var headText = document.createElement('span');
+  headText.textContent = t('domain.title');
+  head.appendChild(headText);
+
+  var body = document.createElement('div');
+  body.className = 'domain-shift-body';
+  body.innerHTML = escapeHtml(t('domain.desc')) +
+    ' <b>' + escapeHtml(_taskOriginHost) + '</b> → <b>' + escapeHtml(host) + '</b>';
+
+  var sub = document.createElement('div');
+  sub.className = 'domain-shift-sub';
+  sub.textContent = t('domain.hint');
+
+  var close = document.createElement('button');
+  close.className = 'domain-shift-close';
+  close.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+  close.title = t('common.close');
+  close.addEventListener('click', function () {
+    _taskOriginHost = host; // usuário reconheceu: passa a ser o domínio base
+    banner.remove();
+  });
+
+  banner.appendChild(head);
+  banner.appendChild(body);
+  banner.appendChild(sub);
+  banner.appendChild(close);
+  area.appendChild(banner);
+
+  if (MotionUI.canAnimate()) {
+    gsap.fromTo(banner, { autoAlpha: 0, y: -10 }, { autoAlpha: 1, y: 0, duration: 0.3, ease: 'power2.out', clearProps: 'transform' });
+  }
+}
+
 // === PERMISSÕES: BANNER ACIMA DO CHAT (estilo Claude in Chrome) ===
 // A solicitação de permissão NÃO aparece mais no meio das mensagens: ela é
 // renderizada como um banner fixo acima da conversa, e some ao ser respondida.
@@ -4550,17 +4774,26 @@ function renderPermissionBanner(origin, token) {
     setTimeout(function () { banner.remove(); }, 350);
   }
 
-  var approveBtn = document.createElement('button');
-  approveBtn.className = 'btn-approve-origin';
-  approveBtn.innerHTML = '<i class="fa-solid fa-check"></i> ' + escapeHtml(t('perm.allow'));
-  approveBtn.addEventListener('click', function () {
-    chrome.runtime.sendMessage({ type: 'grant_permission', origin: origin, token: token }, function (response) {
+  function grant(scope) {
+    chrome.runtime.sendMessage({ type: 'grant_permission', origin: origin, token: token, scope: scope }, function () {
       void chrome.runtime.lastError;
       dismiss();
     });
     // Se o background não responder em 1.5s, dispensa mesmo assim
     setTimeout(dismiss, 1500);
-  });
+  }
+
+  var approveBtn = document.createElement('button');
+  approveBtn.className = 'btn-approve-origin';
+  approveBtn.innerHTML = '<i class="fa-solid fa-check"></i> ' + escapeHtml(t('perm.once'));
+  approveBtn.addEventListener('click', function () { grant('session'); });
+
+  // "Sempre permitir": grava na lista permanente, revogável nas Configurações
+  var alwaysBtn = document.createElement('button');
+  alwaysBtn.className = 'btn-always-origin';
+  alwaysBtn.innerHTML = '<i class="fa-solid fa-shield-check"></i> ' + escapeHtml(t('perm.always'));
+  alwaysBtn.title = t('perm.alwaysHint');
+  alwaysBtn.addEventListener('click', function () { grant('always'); });
 
   var denyBtn = document.createElement('button');
   denyBtn.className = 'btn-deny-origin';
@@ -4574,6 +4807,7 @@ function renderPermissionBanner(origin, token) {
   });
 
   actions.appendChild(approveBtn);
+  actions.appendChild(alwaysBtn);
   actions.appendChild(denyBtn);
 
   banner.appendChild(head);
