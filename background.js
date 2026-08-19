@@ -402,6 +402,88 @@ function resolveElements(tree, query, roleFilter, limit) {
   return scored.slice(0, limit || 3);
 }
 
+// ========== REPLAY DE WORKFLOW ==========
+// Reexecuta um fluxo gravado. Cada passo é verificado: se o elemento não
+// aparecer, o replay PARA e diz onde parou — em vez de seguir cegamente e
+// deixar a página num estado imprevisível.
+async function resolveSelectorToNodeId(tabId, selector) {
+  var doc = await executeCDPCommand(tabId, "DOM.getDocument", { depth: -1 });
+  var found = await executeCDPCommand(tabId, "DOM.querySelector", {
+    nodeId: doc.root.nodeId,
+    selector: selector
+  });
+  if (!found || !found.nodeId) return null;
+  var described = await executeCDPCommand(tabId, "DOM.describeNode", { nodeId: found.nodeId });
+  return described && described.node ? described.node.backendNodeId : null;
+}
+
+async function replayWorkflow(tabId, workflow, options) {
+  options = options || {};
+  var stepTimeout = options.step_timeout_ms || 8000;
+  var results = [];
+
+  for (var i = 0; i < workflow.steps.length; i++) {
+    var step = workflow.steps[i];
+    var record = { index: i, type: step.type, selector: step.selector };
+
+    // Espera o elemento existir: a página pode ainda estar renderizando
+    var backendNodeId = null;
+    var start = Date.now();
+    while (Date.now() - start < stepTimeout) {
+      try {
+        backendNodeId = await resolveSelectorToNodeId(tabId, step.selector);
+        if (backendNodeId) break;
+      } catch (e) { /* documento trocando: tenta de novo */ }
+      await new Promise(function (r) { setTimeout(r, 250); });
+    }
+
+    if (!backendNodeId) {
+      record.success = false;
+      record.error = "Elemento nao encontrado: " + step.selector;
+      results.push(record);
+      return {
+        success: false,
+        completed_steps: i,
+        total_steps: workflow.steps.length,
+        results: results,
+        error: "O replay parou no passo " + (i + 1) + ": o elemento nao existe mais nesta pagina.",
+        hint: "A pagina provavelmente mudou desde a gravacao. Grave o fluxo de novo ou faca este passo manualmente."
+      };
+    }
+
+    try {
+      if (step.type === "click") {
+        await focusAndClick(tabId, backendNodeId);
+      } else if (step.type === "type") {
+        await focusAndType(tabId, backendNodeId, String(step.value || ""));
+      }
+      record.success = true;
+    } catch (err) {
+      record.success = false;
+      record.error = err.message;
+      results.push(record);
+      return {
+        success: false,
+        completed_steps: i,
+        total_steps: workflow.steps.length,
+        results: results,
+        error: "Falha ao executar o passo " + (i + 1) + ": " + err.message
+      };
+    }
+
+    results.push(record);
+    await new Promise(function (r) { setTimeout(r, 350); }); // deixa a página reagir
+  }
+
+  return {
+    success: true,
+    completed_steps: workflow.steps.length,
+    total_steps: workflow.steps.length,
+    results: results,
+    message: "Fluxo \"" + workflow.name + "\" reexecutado: " + workflow.steps.length + " passo(s)."
+  };
+}
+
 // ========== VERIFICAÇÃO PÓS-AÇÃO ==========
 // Sinais baratos do estado da página, usados para responder "a ação surtiu
 // efeito?" sem gastar um round-trip de screenshot com o modelo.
@@ -708,6 +790,21 @@ async function handleDebuggerAction(action, payload) {
 
   if (action === "wait_for") {
     return await waitForCondition(tabId, payload);
+  }
+
+  if (action === "replay_workflow") {
+    var workflow = await WorkflowRecorder.getWorkflow(payload.name);
+    if (!workflow) {
+      return {
+        success: false,
+        error: "Fluxo nao encontrado: " + payload.name,
+        hint: "Use list_workflows para ver os fluxos gravados."
+      };
+    }
+    if (!workflow.steps || !workflow.steps.length) {
+      return { success: false, error: "O fluxo \"" + payload.name + "\" nao tem passos gravados." };
+    }
+    return await replayWorkflow(tabId, workflow, payload);
   }
 
   if (action === "simulate_click") {

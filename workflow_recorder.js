@@ -83,17 +83,76 @@ export class WorkflowRecorder {
     }
   }
 
-  static async saveWorkflow(name) {
-    const workflow = [...this.currentWorkflow];
+  // Formato único de workflow. Antes havia duas gravações incompatíveis
+  // (um array cru aqui e um objeto no popup), e nada lia de volta.
+  static buildWorkflow(name, steps, extra) {
+    return Object.assign({
+      version: 1,
+      name: name,
+      steps: (steps || []).map(function (step, index) {
+        return {
+          index: index,
+          type: step.type,          // 'click' | 'type'
+          selector: step.selector,
+          value: step.value,
+          url: step.url || null,
+          timestamp: step.timestamp
+        };
+      }),
+      narration: '',
+      createdAt: Date.now()
+    }, extra || {});
+  }
+
+  static async saveWorkflow(name, extra) {
+    const workflow = this.buildWorkflow(name, this.currentWorkflow, extra);
     return new Promise((resolve) => {
       chrome.storage.local.get(['aurex_workflows'], (result) => {
         const workflows = result.aurex_workflows || {};
         workflows[name] = workflow;
+        chrome.storage.local.set({ aurex_workflows: workflows }, () => resolve(workflow));
+      });
+    });
+  }
+
+  static async listWorkflows() {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(['aurex_workflows'], (result) => {
+        const stored = (result && result.aurex_workflows) || {};
+        // Migração silenciosa do formato antigo (array cru ou objeto sem version)
+        const normalized = Object.keys(stored).map((name) => {
+          const value = stored[name];
+          if (Array.isArray(value)) return this.buildWorkflow(name, value);
+          if (!value.version) return this.buildWorkflow(name, value.steps || [], { narration: value.narration || '', createdAt: value.createdAt });
+          return value;
+        });
+        resolve(normalized);
+      });
+    });
+  }
+
+  static async getWorkflow(name) {
+    const all = await this.listWorkflows();
+    return all.find((w) => w.name === name) || null;
+  }
+
+  static async deleteWorkflow(name) {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(['aurex_workflows'], (result) => {
+        const workflows = (result && result.aurex_workflows) || {};
+        delete workflows[name];
         chrome.storage.local.set({ aurex_workflows: workflows }, resolve);
       });
     });
   }
 
-  // O Replay vai usar o Runtime.evaluate no background.js para executar os cliques baseados no seletor,
-  // pois não temos o AXNode ID mapeado diretamente na gravação do DOM.
+  static async updateWorkflow(name, workflow) {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(['aurex_workflows'], (result) => {
+        const workflows = (result && result.aurex_workflows) || {};
+        workflows[name] = Object.assign({}, workflow, { name: name, version: 1 });
+        chrome.storage.local.set({ aurex_workflows: workflows }, () => resolve(workflows[name]));
+      });
+    });
+  }
 }

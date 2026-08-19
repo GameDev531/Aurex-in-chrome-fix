@@ -622,6 +622,22 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "workflow",
+      description: "Fluxos que o USUARIO gravou demonstrando um processo (em 'Ensinar Aurex'). list: mostra os fluxos disponiveis; replay: reexecuta um fluxo passo a passo na aba atual, parando e avisando se algum elemento nao existir mais; delete: apaga. Use replay quando o usuario pedir para repetir algo que ele ja te ensinou.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", enum: ["list", "replay", "delete"] },
+          name: { type: "string", description: "Nome do fluxo (replay e delete)" },
+          step_timeout_ms: { type: "number", description: "Tempo maximo de espera por passo no replay (padrao 8000)" }
+        },
+        required: ["command"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "task_memory",
       description: "Um bloco de notas persistente do Aurex. Use para salvar estados complexos, todo-lists ou roadmaps durante execucao de multi-passos.",
       parameters: {
@@ -655,6 +671,7 @@ const TOOL_ACCESS = {
   google_places: "read",
   task_memory: "read",
   // Escrita
+  workflow: "write",            // replay reexecuta cliques e digitação
   save_markdown_file: "write",  // grava na pasta Downloads do usuário
   tab_manager: "write",         // abre, troca e fecha abas
   api_request: "write",         // pode fazer POST em serviços externos
@@ -1172,6 +1189,7 @@ function resetChatUI() {
   currentChatId = Date.now().toString();
   _planApproved = false; // conversa nova volta a exigir aprovação do plano
   resetTaskOrigin();     // e volta a vigiar o domínio do zero
+  clearTaskState();      // estado de retomada pertence à conversa anterior
   chatHistory = [{ role: "system", content: SYSTEM_PROMPT }];
   let newTask = localStorage.getItem("aurex_active_task");
   if (newTask) chatHistory[0].content += "\n\n# MEMORIA DA TAREFA ATIVA:\n" + newTask;
@@ -1686,6 +1704,11 @@ function appendToolCallToUI(name, args) {
     else if (args.command === "switch_tab") humanMessage = "🔄 Mudando para aba: " + args.tabId;
     else if (args.command === "close_tab") humanMessage = "❌ Fechando aba: " + args.tabId;
   }
+  else if (name === "workflow") {
+    if (args.command === "replay") humanMessage = "▶️ Reexecutando o fluxo: " + (args.name || "");
+    else if (args.command === "list") humanMessage = "📋 Listando fluxos gravados...";
+    else humanMessage = "🗑️ Removendo fluxo: " + (args.name || "");
+  }
   else if (name === "run_command") {
     humanMessage = "⚙️ Executando na sandbox: " + String(args.command || "").substring(0, 60);
   }
@@ -2145,6 +2168,9 @@ async function processLLMLoop(iterationCount = 0) {
       // Estado real das ferramentas (evita o modelo chamar o que não existe)
       extraDirectives += getToolingDirective();
 
+      // Onde a tarefa parou, para retomar sem repetir trabalho
+      extraDirectives += getTaskStateDirective();
+
       // APIs oficiais que o usuário configurou (sem expor as chaves)
       extraDirectives += getIntegrationsDirective();
 
@@ -2359,6 +2385,9 @@ async function processLLMLoop(iterationCount = 0) {
           if (result && result.success && typeof result.url === 'string') {
             checkDomainShift(result.url);
           }
+
+          // Registra onde a tarefa está, para poder ser retomada depois
+          recordStepInState(name, args, result);
           
           if (name === "capture_screenshot" && result.dataUrl) {
             capturedDataUrl = result.dataUrl;
@@ -2932,14 +2961,27 @@ function executeToolInBrowser(name, args) {
     } else if (name === "task_memory") {
       if (args.command === "set_task") {
         localStorage.setItem("aurex_active_task", args.task_content);
+        saveTaskState({ note: args.task_content });
         resolve({ success: true, message: "Memoria salva" });
       } else if (args.command === "get_task") {
+        // Devolve a nota E o estado observável (onde a tarefa parou), para
+        // retomar sem ter que re-navegar tudo do zero.
         var t = localStorage.getItem("aurex_active_task");
-        resolve({ success: true, task_content: t || "Nenhuma memoria salva" });
+        var state = loadTaskState();
+        resolve({
+          success: true,
+          task_content: t || "Nenhuma memoria salva",
+          last_state: state || undefined
+        });
       } else if (args.command === "clear_task") {
         localStorage.removeItem("aurex_active_task");
+        clearTaskState();
         resolve({ success: true, message: "Memoria limpa" });
+      } else {
+        resolve({ success: false, error: "Comando desconhecido em task_memory: " + args.command });
       }
+    } else if (name === "workflow") {
+      executeWorkflowTool(args).then(resolve);
     } else {
       resolve({ success: false, error: "Unknown tool: " + name });
     }
@@ -3756,6 +3798,118 @@ async function executeGooglePlaces(args) {
   }
 }
 
+// ========== ESTADO DA TAREFA (retomada de trabalho longo) ==========
+// Guarda o mínimo necessário para retomar: onde estava, o que fez por último
+// e o que foi confirmado. Sem isso, uma tarefa longa interrompida recomeça do
+// zero — o agente re-navega tudo e às vezes repete ações já feitas.
+function taskStateKey() {
+  return 'aurex_task_state_' + (typeof currentChatId !== 'undefined' ? currentChatId : 'default');
+}
+
+function saveTaskState(patch) {
+  if (isTempChat) return; // chat temporário não deixa rastro
+  try {
+    var current = loadTaskState() || {};
+    var next = Object.assign(current, patch, { updatedAt: Date.now() });
+    localStorage.setItem(taskStateKey(), JSON.stringify(next));
+  } catch (e) { /* cota cheia: seguimos sem estado */ }
+}
+
+function loadTaskState() {
+  try {
+    var raw = localStorage.getItem(taskStateKey());
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+
+function clearTaskState() {
+  try { localStorage.removeItem(taskStateKey()); } catch (e) { /* ignore */ }
+}
+
+// Registra automaticamente o que o agente acabou de fazer e o que foi
+// observado — é o que permite dizer "você parou aqui" ao retomar.
+function recordStepInState(name, args, result) {
+  if (!result) return;
+  var patch = { last_action: name, last_action_at: Date.now() };
+  if (args && args.command) patch.last_action = name + ':' + args.command;
+  if (typeof result.url === 'string') patch.url = result.url;
+  if (typeof result.effect === 'string') patch.last_verified = result.effect;
+  if (result.condition && result.success) patch.last_verified = 'condicao ' + result.condition + ' confirmada';
+  if (Array.isArray(result.artifacts) && result.artifacts.length) {
+    patch.artifacts = result.artifacts.map(function (a) { return a.path; }).slice(0, 10);
+  }
+  saveTaskState(patch);
+}
+
+// Diretiva de retomada: só aparece quando existe estado relevante
+function getTaskStateDirective() {
+  var state = loadTaskState();
+  if (!state || !state.last_action) return "";
+  var age = Date.now() - (state.updatedAt || 0);
+  if (age > 1000 * 60 * 60 * 12) return ""; // estado velho demais para confiar
+
+  var lines = [];
+  if (state.url) lines.push("- Ultima pagina: " + state.url);
+  if (state.last_action) lines.push("- Ultima acao: " + state.last_action);
+  if (state.last_verified) lines.push("- Ultimo resultado verificado: " + state.last_verified);
+  if (state.artifacts && state.artifacts.length) lines.push("- Arquivos ja gerados: " + state.artifacts.join(', '));
+  if (!lines.length) return "";
+
+  return "\n\n# ESTADO DA TAREFA (retomada)\nVoce ja estava trabalhando nesta conversa. Nao recomece do zero: confira o que ja foi feito antes de repetir acoes.\n" + lines.join("\n");
+}
+
+// ========== FERRAMENTA DE WORKFLOWS ==========
+async function executeWorkflowTool(args) {
+  var command = args.command;
+  try {
+    if (command === 'list') {
+      var list = await new Promise(function (resolve) {
+        chrome.storage.local.get(['aurex_workflows'], function (result) {
+          var stored = (result && result.aurex_workflows) || {};
+          resolve(Object.keys(stored).map(function (name) {
+            var w = stored[name];
+            var steps = Array.isArray(w) ? w : (w.steps || []);
+            return { name: name, steps: steps.length, narration: (w && w.narration) || '' };
+          }));
+        });
+      });
+      if (!list.length) {
+        return { success: true, workflows: [], message: "Nenhum fluxo gravado ainda. O usuario pode gravar um em 'Ensinar Aurex'." };
+      }
+      return { success: true, workflows: list };
+    }
+
+    if (command === 'replay') {
+      if (!args.name) return { success: false, error: "Informe o nome do fluxo a reexecutar." };
+      return await new Promise(function (resolve) {
+        chrome.runtime.sendMessage({
+          action: "debugger_action",
+          payload: { command: "replay_workflow", name: args.name, step_timeout_ms: args.step_timeout_ms }
+        }, function (response) {
+          if (chrome.runtime.lastError) resolve({ success: false, error: chrome.runtime.lastError.message });
+          else resolve(response);
+        });
+      });
+    }
+
+    if (command === 'delete') {
+      if (!args.name) return { success: false, error: "Informe o nome do fluxo." };
+      await new Promise(function (resolve) {
+        chrome.storage.local.get(['aurex_workflows'], function (result) {
+          var workflows = (result && result.aurex_workflows) || {};
+          delete workflows[args.name];
+          chrome.storage.local.set({ aurex_workflows: workflows }, resolve);
+        });
+      });
+      return { success: true, message: "Fluxo removido: " + args.name };
+    }
+
+    return { success: false, error: "Comando desconhecido em workflow: " + command };
+  } catch (err) {
+    return { success: false, error: "Falha em workflow: " + err.message };
+  }
+}
+
 // ========== SANDBOX: FORMATAÇÃO DO RESULTADO PARA O MODELO ==========
 // Corta a saída mantendo cabeça E cauda: em log de build o erro final está na
 // cauda; em `ls`, o que importa está na cabeça.
@@ -4149,7 +4303,10 @@ function setupTeachPanel() {
   var toggle = document.getElementById('teach-toggle');
 
   if (openBtn && panel) {
-    openBtn.addEventListener('click', function () { panel.classList.remove('hidden'); });
+    openBtn.addEventListener('click', function () {
+      panel.classList.remove('hidden');
+      renderWorkflowsList();
+    });
   }
   if (closeBtn && panel) {
     closeBtn.addEventListener('click', function () {
@@ -4163,6 +4320,76 @@ function setupTeachPanel() {
       else startTeachRecording();
     });
   }
+}
+
+// Lista os fluxos gravados com ações diretas — antes o usuário gravava e
+// nunca mais via o resultado, porque nada lia de volta.
+function renderWorkflowsList() {
+  var list = document.getElementById('workflows-list');
+  if (!list) return;
+
+  chrome.storage.local.get(['aurex_workflows'], function (result) {
+    var stored = (result && result.aurex_workflows) || {};
+    var names = Object.keys(stored);
+    list.innerHTML = '';
+
+    if (!names.length) {
+      list.innerHTML = '<div class="approved-sites-empty">' + escapeHtml(t('teach.saved.empty')) + '</div>';
+      return;
+    }
+
+    names.forEach(function (name) {
+      var raw = stored[name];
+      var steps = Array.isArray(raw) ? raw : (raw.steps || []); // aceita o formato antigo
+      var narration = (raw && raw.narration) || '';
+
+      var item = document.createElement('div');
+      item.className = 'workflow-item';
+
+      var info = document.createElement('div');
+      info.className = 'workflow-info';
+      var title = document.createElement('div');
+      title.className = 'workflow-name';
+      title.textContent = name;
+      info.appendChild(title);
+      var meta = document.createElement('div');
+      meta.className = 'workflow-meta';
+      meta.textContent = steps.length + ' ' + t('teach.steps') + (narration ? ' · ' + narration.slice(0, 60) : '');
+      info.appendChild(meta);
+
+      var actions = document.createElement('div');
+      actions.className = 'workflow-actions';
+
+      var playBtn = document.createElement('button');
+      playBtn.className = 'action-btn primary';
+      playBtn.innerHTML = '<i class="fa-solid fa-play"></i>';
+      playBtn.title = t('teach.replay');
+      playBtn.addEventListener('click', function () {
+        var panel = document.getElementById('teach-panel');
+        if (panel) panel.classList.add('hidden');
+        switchToChatMode();
+        sendUserMessage('Reexecute o fluxo gravado chamado "' + name + '" na aba atual.');
+      });
+
+      var delBtn = document.createElement('button');
+      delBtn.className = 'icon-btn';
+      delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
+      delBtn.title = t('common.delete');
+      delBtn.addEventListener('click', function () {
+        chrome.storage.local.get(['aurex_workflows'], function (res) {
+          var workflows = (res && res.aurex_workflows) || {};
+          delete workflows[name];
+          chrome.storage.local.set({ aurex_workflows: workflows }, renderWorkflowsList);
+        });
+      });
+
+      actions.appendChild(playBtn);
+      actions.appendChild(delBtn);
+      item.appendChild(info);
+      item.appendChild(actions);
+      list.appendChild(item);
+    });
+  });
 }
 
 function startTeachRecording() {
@@ -4212,12 +4439,30 @@ function stopTeachRecording() {
   chrome.runtime.sendMessage({ type: 'stop_recording' }, function (response) {
     void chrome.runtime.lastError;
     var steps = (response && response.workflow) || [];
-    // Persiste o fluxo (passos + narração) em aurex_workflows
+    // Formato único (o mesmo que o replay lê). Antes havia dois formatos
+    // incompatíveis gravados em lugares diferentes, e nada lia de volta.
+    var workflow = {
+      version: 1,
+      name: name,
+      steps: steps.map(function (step, index) {
+        return {
+          index: index,
+          type: step.type,
+          selector: step.selector,
+          value: step.value,
+          url: step.url || null,
+          timestamp: step.timestamp
+        };
+      }),
+      narration: _teachTranscript.trim(),
+      createdAt: Date.now()
+    };
     chrome.storage.local.get(['aurex_workflows'], function (result) {
       var workflows = (result && result.aurex_workflows) || {};
-      workflows[name] = { steps: steps, narration: _teachTranscript.trim(), createdAt: Date.now() };
+      workflows[name] = workflow;
       chrome.storage.local.set({ aurex_workflows: workflows }, function () {
         if (statusEl) statusEl.textContent = t('teach.saved') + ' (' + steps.length + ' ' + t('teach.steps') + ')';
+        renderWorkflowsList();
       });
     });
   });

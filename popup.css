@@ -2320,3 +2320,35 @@ body.temp-chat .temp-chat-pill { display: inline-flex; }
   padding: 2px 4px;
 }
 .domain-shift-close:hover { color: var(--text-primary); }
+
+/* --- Fluxos gravados (Ensinar Aurex) --- */
+.workflows-list { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.workflow-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+}
+.workflow-info { min-width: 0; }
+.workflow-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-meta {
+  font-size: 11px;
+  color: var(--text-muted, #6b6f7d);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.workflow-actions .action-btn { padding: 6px 10px; }
