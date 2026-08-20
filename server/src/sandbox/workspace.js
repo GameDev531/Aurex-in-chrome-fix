@@ -14,6 +14,30 @@ const SUPPORT_DIRS = ['.home', '.local', '.cache', '.cache/matplotlib', '.npm-gl
 // Não contam como artefato produzido pelo usuário
 const IGNORED_PREFIXES = ['.home/', '.local/', '.cache/', '.npm-global/', '.aurex/', '.git/', 'node_modules/', '__pycache__/'];
 
+// Sobe até achar um diretório que exista e exige que o caminho REAL dele
+// esteja dentro do workspace. É o que impede criar arquivo através de um
+// diretório que é symlink para fora.
+async function assertNearestAncestorInside(workspaceDir, abs) {
+  const realRoot = await fs.realpath(workspaceDir);
+  let probe = path.dirname(abs);
+  for (let depth = 0; depth < 64; depth++) {
+    let realProbe;
+    try {
+      realProbe = await fs.realpath(probe);
+    } catch {
+      const up = path.dirname(probe);
+      if (up === probe) break; // chegou na raiz sem encontrar nada existente
+      probe = up;
+      continue;
+    }
+    if (realProbe !== realRoot && !realProbe.startsWith(realRoot + path.sep)) {
+      throw sandboxError('invalid_path', 'O caminho escapa do workspace por link simbólico.');
+    }
+    return;
+  }
+  throw sandboxError('invalid_path', 'Não foi possível validar o caminho dentro do workspace.');
+}
+
 export function assertValidSessionId(sessionId) {
   if (!SESSION_ID_PATTERN.test(String(sessionId || ''))) {
     throw sandboxError('invalid_request', 'session_id inválido (use 6 a 64 caracteres: letras, números, _ ou -).');
@@ -70,6 +94,12 @@ export async function resolveInWorkspace(workspaceDir, relPath) {
   try {
     stat = await fs.lstat(abs);
   } catch {
+    // O alvo ainda não existe — caso de CRIAÇÃO. Sair daqui sem verificar
+    // containment era um escape real: bastava o container criar
+    // /work/evil -> /home/user/.ssh e pedir a escrita de "evil/authorized_keys"
+    // para o SERVIDOR gravar fora do workspace. Verificamos o ancestral
+    // existente mais próximo antes de liberar.
+    await assertNearestAncestorInside(workspaceDir, abs);
     return { abs, rel, stat: null };
   }
 

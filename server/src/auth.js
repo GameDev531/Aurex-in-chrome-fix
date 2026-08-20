@@ -3,6 +3,7 @@
 // desenvolvimento (nome + email) quando não há Google configurado.
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
+import { asyncRoute } from './middleware.js';
 import {
   upsertUser,
   getUser,
@@ -19,6 +20,29 @@ const AUTH_CODE_TTL_MS = 1000 * 60 * 5;                // 5 min
 
 // Estados pendentes do fluxo (state da extensão -> challenge/redirect)
 const pendingLogins = new Map();
+const MAX_PENDING_LOGINS = 5000;
+
+function pruneExpiredLogins() {
+  const cutoff = Date.now() - AUTH_CODE_TTL_MS;
+  for (const [state, entry] of pendingLogins.entries()) {
+    if (!entry.createdAt || entry.createdAt < cutoff) pendingLogins.delete(state);
+  }
+}
+
+// Allowlist de destinos do código de autorização. A extensão usa
+// chrome.identity.getRedirectURL(), que é sempre
+// https://<id-da-extensao>.chromiumapp.org/callback — um valor exato e fácil
+// de registrar.
+export function allowedRedirects() {
+  return (process.env.AUREX_ALLOWED_REDIRECT_URIS || '')
+    .split(',').map((v) => v.trim()).filter(Boolean);
+}
+
+function isAllowedRedirect(value) {
+  const list = allowedRedirects();
+  if (list.length === 0) return false; // fail closed: sem configuração, ninguém entra
+  return list.includes(value);
+}
 
 function jwtSecret() {
   return process.env.AUREX_JWT_SECRET || 'change-this-to-a-long-random-secret';
@@ -86,7 +110,27 @@ export function registerAuthRoutes(app) {
     if (!state || !challenge || !redirectUri) {
       return res.status(400).send('Parâmetros obrigatórios: state, code_challenge, redirect_uri.');
     }
-    pendingLogins.set(String(state), { challenge: String(challenge), redirectUri: String(redirectUri) });
+
+    // Sem allowlist, um atacante registrava o próprio redirect_uri e o próprio
+    // desafio PKCE, mandava o link do Google para a vítima e recebia o código
+    // de autorização DELA — tomada de conta com um clique. O PKCE não protege
+    // aqui justamente porque quem registrou o desafio foi o atacante.
+    if (!isAllowedRedirect(String(redirectUri))) {
+      return res.status(400).send('redirect_uri não registrado. Configure AUREX_ALLOWED_REDIRECT_URIS no servidor.');
+    }
+
+    // Mapa controlado pelo cliente: sem teto, um laço de requisições anônimas
+    // consumiria a heap até derrubar o processo.
+    pruneExpiredLogins();
+    if (pendingLogins.size >= MAX_PENDING_LOGINS) {
+      return res.status(429).send('Muitos logins pendentes. Tente novamente em instantes.');
+    }
+
+    pendingLogins.set(String(state), {
+      challenge: String(challenge),
+      redirectUri: String(redirectUri),
+      createdAt: Date.now()
+    });
 
     if (googleConfigured()) {
       const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
@@ -120,20 +164,28 @@ export function registerAuthRoutes(app) {
 </form></body></html>`);
   });
 
-  // Login de desenvolvimento
-  app.post('/auth/dev-login', async (req, res) => {
-    const { state, name, email } = req.body || {};
-    if (!state || !name) return res.status(400).send('Nome e state são obrigatórios.');
-    const user = await upsertUser({
-      id: 'dev_' + base64UrlSha256(String(email || name)).slice(0, 20),
-      name: String(name).slice(0, 40),
-      email: email ? String(email) : null
-    });
-    await finishLogin(res, String(state), user);
-  });
+  // Login de desenvolvimento.
+  //
+  // CRÍTICO: esta rota emite um token válido sem NENHUMA credencial. Antes ela
+  // era registrada sempre — só o formulário GET era condicionado ao Google.
+  // Bastavam três requisições sem autenticação para obter um JWT legítimo e,
+  // com ele, execução de código na sandbox. Agora ela só existe quando o
+  // Google não está configurado, e o boot recusa combiná-la com a sandbox.
+  if (!googleConfigured()) {
+    app.post('/auth/dev-login', asyncRoute(async (req, res) => {
+      const { state, name, email } = req.body || {};
+      if (!state || !name) return res.status(400).send('Nome e state são obrigatórios.');
+      const user = await upsertUser({
+        id: 'dev_' + base64UrlSha256(String(email || name)).slice(0, 20),
+        name: String(name).slice(0, 40),
+        email: email ? String(email) : null
+      });
+      await finishLogin(res, String(state), user);
+    }));
+  }
 
   // Callback do Google
-  app.get('/auth/google/callback', async (req, res) => {
+  app.get('/auth/google/callback', asyncRoute(async (req, res) => {
     const { code, state } = req.query;
     if (!code || !state) return res.status(400).send('Callback inválido do Google.');
     try {
@@ -169,10 +221,10 @@ export function registerAuthRoutes(app) {
       console.error('[Aurex Auth] Google callback:', err.message);
       res.status(502).send('Falha ao autenticar com o Google. Tente novamente.');
     }
-  });
+  }));
 
   // Passo 2 — troca do code (com verificação PKCE) por tokens
-  app.post('/auth/token', async (req, res) => {
+  app.post('/auth/token', asyncRoute(async (req, res) => {
     const { code, code_verifier: verifier, redirect_uri: redirectUri } = req.body || {};
     if (!code || !verifier || !redirectUri) {
       return res.status(400).json({ error: 'code, code_verifier e redirect_uri são obrigatórios.' });
@@ -186,10 +238,10 @@ export function registerAuthRoutes(app) {
     const user = await getUser(entry.userId);
     if (!user) return res.status(400).json({ error: 'Usuário não encontrado.' });
     res.json(await issueTokenPair(user));
-  });
+  }));
 
   // Renovação de sessão
-  app.post('/auth/refresh', async (req, res) => {
+  app.post('/auth/refresh', asyncRoute(async (req, res) => {
     const { refreshToken } = req.body || {};
     if (!refreshToken) return res.status(400).json({ error: 'refreshToken é obrigatório.' });
     const entry = await consumeRefreshToken(String(refreshToken));
@@ -197,12 +249,12 @@ export function registerAuthRoutes(app) {
     const user = await getUser(entry.userId);
     if (!user) return res.status(401).json({ error: 'Usuário não encontrado.' });
     res.json(await issueTokenPair(user));
-  });
+  }));
 
   // Logout — revoga o refresh token
-  app.post('/auth/logout', async (req, res) => {
+  app.post('/auth/logout', asyncRoute(async (req, res) => {
     const { refreshToken } = req.body || {};
     if (refreshToken) await revokeRefreshToken(String(refreshToken));
     res.json({ ok: true });
-  });
+  }));
 }

@@ -17,15 +17,22 @@ import cors from 'cors';
 import { initDb, usingPostgres } from './db.js';
 import { registerAuthRoutes } from './auth.js';
 import { authenticate, validApiKeys } from './middleware.js';
-import { readSandboxConfig, assertSandboxBootConfig, dockerPreflight, SandboxBootError } from './sandbox/config.js';
+import { readSandboxConfig, assertCoreBootConfig, assertSandboxBootConfig, dockerPreflight, SandboxBootError } from './sandbox/config.js';
 import { registerSandboxRoutes } from './sandbox/routes.js';
 import { sweepOrphanContainers } from './sandbox/docker.js';
 import { startSandboxSweeper } from './sandbox/sweeper.js';
 
 const app = express();
-app.use(cors()); // extensão roda em chrome-extension:// — liberamos CORS
-app.use(express.json({ limit: '25mb' })); // screenshots em base64 são grandes
-app.use(express.urlencoded({ extended: false }));
+// CORS restrito quando configurado. Com '*', qualquer página que o usuário
+// visitasse podia ler respostas desta API no localhost dele.
+const allowedOrigins = (process.env.AUREX_ALLOWED_ORIGINS || '')
+  .split(',').map((v) => v.trim()).filter(Boolean);
+app.use(cors(allowedOrigins.length ? { origin: allowedOrigins, credentials: false } : {}));
+
+// O parser JSON de 25 MB era global, então o limite menor declarado no router
+// da sandbox nunca valia (o body-parser marca req._body e o segundo parser
+// não roda). Agora o limite grande fica só na rota que precisa dele.
+app.use(express.urlencoded({ extended: false, limit: '256kb' }));
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
@@ -46,10 +53,11 @@ app.get('/health', (req, res) => {
     service: 'aurex-server',
     database: usingPostgres() ? 'postgres' : 'memory',
     model: process.env.DEEPSEEK_API_KEY ? 'deepseek (proxy)' : 'não configurado',
+    // Sem autenticação: nada de stderr do Docker, nome de imagem ou caminho
+    // de build aqui — o detalhe fica no /v1/sandbox/health, que exige token.
     sandbox: {
       enabled: sandboxCfg.enabled,
-      ready: sandboxState.ready,
-      reason: sandboxState.reason || null
+      ready: sandboxState.ready
     }
   });
 });
@@ -59,7 +67,8 @@ registerAuthRoutes(app);
 // chamada não registra rota nenhuma.
 registerSandboxRoutes(app, { cfg: sandboxCfg, state: sandboxState });
 
-app.post('/v1/chat/completions', authenticate, async (req, res) => {
+// Corpo grande só aqui (screenshots em base64), não em todas as rotas
+app.post('/v1/chat/completions', express.json({ limit: '25mb' }), authenticate, async (req, res) => {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) {
     return res.status(503).json({
@@ -102,8 +111,10 @@ app.use((req, res) => {
 });
 
 async function start() {
-  // Trava de boot: falha ruidosa em vez de subir com a sandbox exposta.
+  // Trava de boot: falha ruidosa em vez de subir com credencial fraca ou
+  // com a sandbox exposta.
   try {
+    assertCoreBootConfig();
     assertSandboxBootConfig(sandboxCfg);
   } catch (err) {
     if (err instanceof SandboxBootError) {

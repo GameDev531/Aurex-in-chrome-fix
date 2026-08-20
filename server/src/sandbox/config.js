@@ -56,6 +56,43 @@ export function readSandboxConfig() {
 
 export class SandboxBootError extends Error {}
 
+const EXAMPLE_API_KEYS = new Set(['aurex-change-me']);
+
+// Verificações que valem SEMPRE, com ou sem sandbox. O segredo do JWT protege
+// /v1/chat/completions independentemente da sandbox: deixar essa checagem
+// dentro do bloco da sandbox significava que, na configuração padrão
+// (sandbox desligada), o segredo público de exemplo continuava valendo e
+// qualquer um podia forjar um token.
+export function assertCoreBootConfig() {
+  const problems = [];
+
+  const secret = process.env.AUREX_JWT_SECRET;
+  if (!secret || secret === DEFAULT_JWT_SECRET) {
+    problems.push(
+      'AUREX_JWT_SECRET ausente ou igual ao valor de exemplo — qualquer pessoa ' +
+      'poderia forjar um token válido e usar o /v1. Gere um segredo aleatório longo ' +
+      '(ex: openssl rand -base64 48).'
+    );
+  } else if (secret.length < 32) {
+    problems.push('AUREX_JWT_SECRET é curto demais (mínimo 32 caracteres).');
+  }
+
+  const weakKeys = validApiKeys().filter((key) => EXAMPLE_API_KEYS.has(key) || key.length < 24);
+  if (weakKeys.length) {
+    problems.push(
+      'AUREX_API_KEYS contém o valor de exemplo ou uma chave curta demais. ' +
+      'Uma chave publicamente conhecida dá acesso ao /v1 (e à sandbox, se ligada). ' +
+      'Gere chaves longas e aleatórias.'
+    );
+  }
+
+  if (problems.length) {
+    throw new SandboxBootError(
+      'Configuração insegura:\n' + problems.map((p, i) => '  ' + (i + 1) + '. ' + p).join('\n')
+    );
+  }
+}
+
 // Falha ruidosa e imediata: cada uma destas combinações transformaria o
 // endpoint de execução numa porta aberta.
 export function assertSandboxBootConfig(cfg) {
@@ -71,11 +108,14 @@ export function assertSandboxBootConfig(cfg) {
     );
   }
 
-  const secret = process.env.AUREX_JWT_SECRET;
-  if (!secret || secret === DEFAULT_JWT_SECRET) {
+  // O login de desenvolvimento emite token sem credencial nenhuma. Ele nunca
+  // pode coexistir com execução de código.
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
     problems.push(
-      'AUREX_JWT_SECRET ausente ou igual ao valor de exemplo — qualquer pessoa ' +
-      'poderia forjar um token válido. Gere um segredo aleatório longo.'
+      'A sandbox está ligada sem Google OAuth configurado, o que mantém ativo o ' +
+      'login de desenvolvimento (/auth/dev-login) — ele emite tokens válidos sem ' +
+      'nenhuma credencial. Configure GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET ou ' +
+      'desligue a sandbox.'
     );
   }
 
