@@ -2395,3 +2395,15 @@ body.temp-chat .temp-chat-pill { display: inline-flex; }
 }
 .usage-badge i { font-size: 10px; }
 body.temp-chat .usage-badge { margin-left: 0; }
+
+/* --- Teto de consumo: aviso antes de bater o limite --- */
+.usage-badge.near-cap {
+  color: var(--color-text-warning, #e5b369);
+  border-color: rgba(229, 179, 105, 0.4);
+  background: rgba(229, 179, 105, 0.1);
+}
+.usage-badge.over-cap {
+  color: var(--accent-red);
+  border-color: rgba(255, 107, 107, 0.45);
+  background: rgba(255, 107, 107, 0.12);
+}

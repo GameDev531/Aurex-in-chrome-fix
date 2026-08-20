@@ -240,6 +240,18 @@
             </div>
 
             <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.cap.title">Limite de consumo</div>
+              <div class="setting-desc" data-i18n="settings.cap.desc">O Aurex pausa e devolve a decisão a você quando a conversa passar deste total de tokens. Protege contra tarefas autônomas longas queimarem sua cota. Deixe vazio ou 0 para não ter limite.</div>
+              <select id="token-cap-select" class="setting-select">
+                <option value="0" data-i18n="settings.cap.none">Sem limite</option>
+                <option value="100000">100.000 tokens</option>
+                <option value="250000">250.000 tokens</option>
+                <option value="500000">500.000 tokens</option>
+                <option value="1000000">1.000.000 tokens</option>
+              </select>
+            </div>
+
+            <div class="setting-block">
               <div class="setting-title" data-i18n="settings.notifications">Notificações</div>
               <div class="setting-desc" data-i18n="settings.notifications.desc">Receba notificações quando as tarefas forem concluídas ou precisarem da sua ação</div>
               <label class="setting-toggle-row">

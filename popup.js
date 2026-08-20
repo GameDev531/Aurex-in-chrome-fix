@@ -2119,6 +2119,20 @@ async function sendUserMessage(text, options) {
 }
 
 async function processLLMLoop(iterationCount = 0) {
+  // Teto de gasto: para ANTES de gastar mais, não depois. Quem paga a conta
+  // é o usuário, então a decisão de continuar é dele.
+  if (isOverSpendCap()) {
+    var cap = getSpendCap();
+    appendMessageToUI('assistant',
+      "⏸️ **Pausei por limite de consumo.**\n\n" +
+      "Esta conversa já usou " + formatTokens(usageTotal()) + " tokens, e o teto configurado é " +
+      formatTokens(cap) + ".\n\n" +
+      "Para continuar: aumente ou desative o teto em **Configurações ▸ Geral**, ou comece uma conversa nova " +
+      "(o contador zera). Se a tarefa estava longa, `/compact` reduz o histórico antes de seguir.");
+    _resetLoopDetector();
+    return;
+  }
+
   // Absolute safety ceiling (protects against infinite recursion in any scenario)
   if (iterationCount >= _loopDetector.ABSOLUTE_CEILING) {
     appendMessageToUI('assistant', "❌ Tarefa interrompida (limite absoluto de " + _loopDetector.ABSOLUTE_CEILING + " passos alcançado). O Aurex pausou para sua segurança.");
@@ -3234,6 +3248,18 @@ function setupSettingsPanel() {
     });
   }
 
+  // Teto de consumo
+  var capSelect = document.getElementById('token-cap-select');
+  if (capSelect) {
+    capSelect.value = String(getSpendCap() || 0);
+    capSelect.addEventListener('change', function () {
+      var value = parseInt(capSelect.value, 10) || 0;
+      if (value > 0) localStorage.setItem('aurex_token_cap', String(value));
+      else localStorage.removeItem('aurex_token_cap');
+      renderUsageBadge();
+    });
+  }
+
   // Formato de arquivo
   var fileSelect = document.getElementById('file-format-select');
   if (fileSelect) {
@@ -3821,6 +3847,24 @@ async function executeGooglePlaces(args) {
 // reenvia o histórico. Sem medição, o usuário só descobre no fim do mês.
 var _usage = { prompt: 0, completion: 0, cached: 0, requests: 0 };
 
+// Teto de gasto por conversa. Um modo autônomo em laço pode queimar a cota do
+// usuário sem que ele perceba — e "consumo ilimitado" é uma classe própria no
+// OWASP LLM Top 10, não só uma questão de conta. Ao atingir o teto o agente
+// para e devolve a decisão para o usuário.
+function getSpendCap() {
+  var raw = parseInt(localStorage.getItem('aurex_token_cap'), 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0; // 0 = sem teto
+}
+
+function usageTotal() {
+  return _usage.prompt + _usage.completion;
+}
+
+function isOverSpendCap() {
+  var cap = getSpendCap();
+  return cap > 0 && usageTotal() >= cap;
+}
+
 function recordUsage(usage) {
   _usage.requests++;
   _usage.prompt += usage.prompt_tokens || 0;
@@ -3852,6 +3896,16 @@ function renderUsageBadge() {
   badge.style.display = 'inline-flex';
   var label = badge.querySelector('.usage-value');
   if (label) label.textContent = formatTokens(total);
+
+  // Avisa antes de bater o teto, não só depois
+  var cap = getSpendCap();
+  badge.classList.remove('near-cap', 'over-cap');
+  if (cap > 0) {
+    var ratio = total / cap;
+    if (ratio >= 1) badge.classList.add('over-cap');
+    else if (ratio >= 0.8) badge.classList.add('near-cap');
+    if (label) label.textContent = formatTokens(total) + ' / ' + formatTokens(cap);
+  }
 
   var cacheRate = _usage.prompt ? Math.round((_usage.cached / _usage.prompt) * 100) : 0;
   badge.title = t('usage.title') + '\n' +
@@ -4066,7 +4120,11 @@ function collectConfiguredSecrets() {
   var secrets = [];
   try {
     getApiIntegrations().forEach(function (item) { if (item.key) secrets.push(item.key); });
-  } catch (e) { /* integrações ilegíveis: seguimos com o resto */ }
+  } catch (e) {
+    // Falhar aqui em silêncio significaria devolver chaves ao modelo sem
+    // ninguém notar. Seguimos limpando o resto, mas deixamos rastro.
+    console.warn('[Aurex] Não consegui ler as integrações para limpeza de segredos:', e && e.message);
+  }
   [
     localStorage.getItem('aurex_search_key'),
     localStorage.getItem('aurex_places_key'),
