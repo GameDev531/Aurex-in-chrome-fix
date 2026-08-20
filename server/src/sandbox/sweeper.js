@@ -15,7 +15,7 @@ export function startSandboxSweeper(cfg) {
         } catch (err) {
           console.warn('[Aurex Sandbox] Falha ao apagar workspace', session.id, err.message);
         }
-        await deleteSandboxSession(session.id);
+        await deleteSandboxSession(session.id, session.ownerKey);
       }
       if (expired.length) {
         console.log(`[Aurex Sandbox] ${expired.length} workspace(s) expirado(s) removido(s).`);

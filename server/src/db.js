@@ -52,12 +52,20 @@ export async function initDb() {
         redirect_uri TEXT NOT NULL,
         expires_at TIMESTAMPTZ NOT NULL
       );
+      -- A chave é (owner_key, id), não id sozinho: o session_id vem do
+      -- cliente e nomes como "default" ou "conversa1" colidem entre usuários
+      -- diferentes. Com id como PK, o segundo usuário atualizava a linha do
+      -- primeiro; a expiração passava a ser calculada sobre a sessão errada e
+      -- o workspace de alguém ficava sem TTL (nunca varrido) ou era apagado
+      -- por atividade de outra pessoa. Os diretórios sempre estiveram
+      -- separados por dono, então isto nunca deu leitura cruzada de arquivos.
       CREATE TABLE IF NOT EXISTS aurex_sandbox_sessions (
-        id TEXT PRIMARY KEY,
+        id TEXT NOT NULL,
         owner_key TEXT NOT NULL,
         created_at TIMESTAMPTZ DEFAULT now(),
         last_used_at TIMESTAMPTZ DEFAULT now(),
-        expires_at TIMESTAMPTZ NOT NULL
+        expires_at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (owner_key, id)
       );
       CREATE INDEX IF NOT EXISTS aurex_sandbox_sessions_owner
         ON aurex_sandbox_sessions(owner_key);
@@ -192,18 +200,24 @@ export async function revokeRefreshToken(token) {
 // As tabelas da sandbox NÃO têm foreign key para aurex_users: um chamador
 // autenticado por API key não tem linha em aurex_users.
 
+// A chave do Map segue a mesma regra da PK do Postgres: dono + sessão.
+function sandboxSessionKey(ownerKey, sessionId) {
+  return ownerKey + '\u0000' + sessionId;
+}
+
 export async function touchSandboxSession(sessionId, ownerKey, expiresAtMs) {
   const expiresAt = new Date(expiresAtMs);
   if (pool) {
     await pool.query(
       `INSERT INTO aurex_sandbox_sessions (id, owner_key, expires_at)
        VALUES ($1,$2,$3)
-       ON CONFLICT (id) DO UPDATE SET last_used_at = now(), expires_at = $3`,
+       ON CONFLICT (owner_key, id) DO UPDATE SET last_used_at = now(), expires_at = $3`,
       [sessionId, ownerKey, expiresAt]
     );
     return;
   }
-  memory.sandboxSessions.set(sessionId, {
+  memory.sandboxSessions.set(sandboxSessionKey(ownerKey, sessionId), {
+    id: sessionId,
     ownerKey,
     lastUsedAt: Date.now(),
     expiresAt: expiresAt.getTime()
@@ -219,18 +233,23 @@ export async function listExpiredSandboxSessions() {
   }
   const now = Date.now();
   const expired = [];
-  for (const [id, entry] of memory.sandboxSessions.entries()) {
-    if (entry.expiresAt < now) expired.push({ id, ownerKey: entry.ownerKey });
+  for (const entry of memory.sandboxSessions.values()) {
+    if (entry.expiresAt < now) expired.push({ id: entry.id, ownerKey: entry.ownerKey });
   }
   return expired;
 }
 
-export async function deleteSandboxSession(sessionId) {
+// Apaga a sessão DE UM DONO. Sem o owner_key, apagar "default" derrubaria o
+// registro de todo mundo que usou esse nome.
+export async function deleteSandboxSession(sessionId, ownerKey) {
   if (pool) {
-    await pool.query('DELETE FROM aurex_sandbox_sessions WHERE id = $1', [sessionId]);
+    await pool.query(
+      'DELETE FROM aurex_sandbox_sessions WHERE id = $1 AND owner_key = $2',
+      [sessionId, ownerKey]
+    );
     return;
   }
-  memory.sandboxSessions.delete(sessionId);
+  memory.sandboxSessions.delete(sandboxSessionKey(ownerKey, sessionId));
 }
 
 // Auditoria: guardamos o comando (útil num incidente), NUNCA a saída.

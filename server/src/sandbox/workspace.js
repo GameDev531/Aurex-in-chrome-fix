@@ -121,12 +121,24 @@ function isIgnored(relPath) {
   return IGNORED_PREFIXES.some((prefix) => relPath === prefix.slice(0, -1) || relPath.startsWith(prefix));
 }
 
-async function walk(dir, baseDir, depth, limit, out) {
-  if (out.entries.length >= limit || depth < 0) return;
+// `countAll` separa duas necessidades que estavam misturadas: LISTAR para o
+// usuário (esconder .cache, node_modules e afins é ruído a menos) e MEDIR a
+// cota (que precisa contar tudo). Usar a mesma varredura para as duas coisas
+// deixava a cota cega justamente onde o disco enche: PYTHONUSERBASE aponta
+// para /work/.local e NPM_CONFIG_PREFIX para /work/.npm-global, os dois na
+// lista de ignorados — dava para encher o disco do host com pip install sem
+// nunca passar do limite medido.
+async function walk(dir, baseDir, depth, limit, out, countAll = false) {
+  if (out.entries.length >= limit || depth < 0) {
+    if (depth < 0) out.truncated = true;
+    return;
+  }
   let items;
   try {
     items = await fs.readdir(dir, { withFileTypes: true });
   } catch {
+    // Diretório ilegível conta como medida incompleta, não como vazio
+    out.truncated = true;
     return;
   }
   for (const item of items) {
@@ -134,11 +146,11 @@ async function walk(dir, baseDir, depth, limit, out) {
     if (item.isSymbolicLink()) continue; // nunca descemos em symlink
     const abs = path.join(dir, item.name);
     const rel = path.relative(baseDir, abs);
-    if (isIgnored(rel)) continue;
+    if (!countAll && isIgnored(rel)) continue;
 
     if (item.isDirectory()) {
       out.entries.push({ path: rel, type: 'dir' });
-      await walk(abs, baseDir, depth - 1, limit, out);
+      await walk(abs, baseDir, depth - 1, limit, out, countAll);
     } else if (item.isFile()) {
       try {
         const st = await fs.lstat(abs);
@@ -158,10 +170,20 @@ export async function listFiles(workspaceDir, options = {}) {
   return out;
 }
 
+// Medição de cota: conta TUDO, inclusive o que a listagem esconde. Os limites
+// são altos de propósito — se ainda assim a varredura não terminar, devolvemos
+// `truncated`, e quem checa a cota trata isso como estouro em vez de "cabe".
+const USAGE_MAX_DEPTH = 24;
+const USAGE_MAX_ENTRIES = 200000;
+
 export async function workspaceUsageBytes(workspaceDir) {
   const out = { entries: [], truncated: false, bytes: 0 };
-  await walk(workspaceDir, workspaceDir, 12, 20000, out);
-  return { bytes: out.bytes, files: out.entries.filter((e) => e.type === 'file').length };
+  await walk(workspaceDir, workspaceDir, USAGE_MAX_DEPTH, USAGE_MAX_ENTRIES, out, true);
+  return {
+    bytes: out.bytes,
+    files: out.entries.filter((e) => e.type === 'file').length,
+    truncated: out.truncated
+  };
 }
 
 export async function readFileForApi(workspaceDir, relPath, maxBytes = 65536) {

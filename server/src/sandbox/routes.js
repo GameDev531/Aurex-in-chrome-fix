@@ -91,11 +91,14 @@ export function registerSandboxRoutes(app, deps) {
       cfg.maxTimeoutMs
     );
 
-    // Cota ANTES de gastar recursos
+    // Cota ANTES de gastar recursos. Medida incompleta conta como estouro:
+    // "não consegui medir" não é o mesmo que "cabe".
     const usageBefore = await workspaceUsageBytes(dir);
-    if (usageBefore.bytes > cfg.maxWorkspaceMb * 1024 * 1024) {
+    if (usageBefore.bytes > cfg.maxWorkspaceMb * 1024 * 1024 || usageBefore.truncated) {
       throw sandboxError('quota_exceeded',
-        'O workspace desta conversa passou de ' + cfg.maxWorkspaceMb + ' MB. Apague arquivos com sandbox_files antes de executar de novo.');
+        usageBefore.truncated
+          ? 'O workspace desta conversa tem arquivos demais para ser medido com segurança. Apague o que não precisa com sandbox_files antes de executar de novo.'
+          : 'O workspace desta conversa passou de ' + cfg.maxWorkspaceMb + ' MB. Apague arquivos com sandbox_files antes de executar de novo.');
     }
 
     checkRateLimit(req.aurexOwnerKey, cfg.ratePerMin);
