@@ -330,6 +330,21 @@
             </div>
 
             <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.mcp.title">Servidores MCP</div>
+              <div class="setting-desc" data-i18n="settings.mcp.desc">Conecte servidores MCP remotos para dar novas ferramentas ao Aurex. Apenas servidores HTTPS remotos — uma extensão não consegue iniciar servidores locais.</div>
+              <input type="text" id="mcp-name" class="setting-select" data-i18n-ph="settings.mcp.namePh" placeholder="Nome (ex: meu-servidor)">
+              <input type="text" id="mcp-url" class="setting-select" style="margin-top:8px;" data-i18n-ph="settings.mcp.urlPh" placeholder="https://servidor.exemplo.com/mcp">
+              <input type="password" id="mcp-token" class="setting-select" style="margin-top:8px;" data-i18n-ph="settings.mcp.tokenPh" placeholder="Token de acesso (opcional)">
+              <button class="action-btn primary" id="mcp-add" style="margin-top:10px;"><i class="fa-solid fa-plug"></i> <span data-i18n="settings.mcp.add">Conectar servidor</span></button>
+              <div id="mcp-status" class="integration-status"></div>
+              <div id="mcp-list" class="integrations-list"></div>
+              <div class="integration-note">
+                <i class="fa-solid fa-shield-halved"></i>
+                <span data-i18n="settings.mcp.note">As descrições das ferramentas são fixadas por assinatura quando você conecta, e é sempre a versão fixada que o modelo enxerga. Se o servidor alterá-las depois, o servidor inteiro fica suspenso até você ler o que mudou e reaprovar.</span>
+              </div>
+            </div>
+
+            <div class="setting-block">
               <div class="setting-title" data-i18n="settings.integrations.title">Chaves de API</div>
               <div class="setting-desc" data-i18n="settings.integrations.desc">Cadastre suas próprias chaves para o Aurex usar as APIs oficiais (Google Maps, clima, notícias). É o jeito certo de obter dados de serviços que não permitem automação na página — sem depender de raspar o site.</div>
 
@@ -471,6 +486,7 @@
   <script src="gsap.min.js"></script>
   <script src="i18n.js"></script>
   <script src="sandbox_client.js"></script>
+  <script src="mcp_client.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
