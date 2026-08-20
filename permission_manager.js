@@ -45,7 +45,11 @@ export class PermissionManager {
   }
 
   static async checkPermission(origin) {
-    if (!origin || origin === 'null') return true; // Local files or extensions might have null origin
+    // Origem vazia ou opaca já foi liberada aqui ("local files might have null
+    // origin"), o que abria uma exceção justamente para o caso mais sensível:
+    // uma página file:// é um arquivo do usuário. Sem origem utilizável a
+    // resposta é NÃO, e quem chamou pede permissão com um rótulo estável.
+    if (!origin || origin === 'null') return false;
     const trusted = await this.getPersistentAllowlist();
     if (trusted.includes(origin)) return true;
     const allowlist = await this.getAllowlist();

@@ -935,6 +935,58 @@ async function focusAndType(tabId, backendNodeId, text) {
 // rodá-lo aqui — não a cada clique ou tecla digitada.
 const CONTENT_READING_ACTIONS = new Set(["get_accessibility_tree", "find_element"]);
 
+// Mensagens de permissão, iguais para qualquer caminho de acesso. Ficam aqui
+// para que nenhuma ferramenta invente a sua própria versão (e acabe sem gate).
+function permissionError(origin, reason) {
+  if (reason === 'pending') {
+    // O usuário ainda não decidiu. A tarefa NÃO falhou — o agente deve
+    // aguardar e tentar de novo, não declarar que não conseguiu.
+    return new Error(`AGUARDANDO PERMISSÃO: o banner de permissão para ${origin} está na tela e o usuário ainda não decidiu. NÃO desista da tarefa e NÃO diga que falhou: use o comando wait (3000 a 5000 ms) e repita esta mesma ação até o usuário aprovar ou bloquear.`);
+  }
+  if (reason === 'no-panel') {
+    return new Error(`PERMISSÃO PENDENTE: o painel do Aurex está fechado, então não foi possível mostrar o pedido de permissão para ${origin}. Peça ao usuário para abrir o painel lateral do Aurex e então tente novamente.`);
+  }
+  return new Error(`PERMISSÃO RECUSADA: o usuário bloqueou o acesso a ${origin}. Não tente acessar este site de novo; siga com outra abordagem ou pergunte ao usuário como proceder.`);
+}
+
+// CHOKEPOINT ÚNICO de acesso a uma origem.
+//
+// Antes, este gate morava dentro de handleDebuggerAction, então valia só para
+// as ferramentas que passam pelo CDP. extract_page (content script) e
+// capture_screenshot (chrome.tabs API) tocavam a mesma página por outra porta
+// e não passavam por gate nenhum — dava para ler um site que o usuário tinha
+// acabado de bloquear. Agora todo caminho de acesso entra por aqui.
+async function authorizeOrigin(origin, tabId) {
+  // Modo Autônomo: concede permissões automaticamente (sem pedir ao usuário)
+  const mode = await getAurexModeFromStorage();
+  if (mode === "autonomous") {
+    await PermissionManager.grantPermission(origin);
+  }
+
+  const decision = await PermissionManager.requirePermission(tabId || null, origin);
+  if (!decision.granted) throw permissionError(origin, decision.reason);
+  return true;
+}
+
+// Origem de uma aba. Páginas com origem opaca (file://, about:blank, frame em
+// sandbox) viram "null" em new URL().origin — e "null" era tratado como
+// permitido. Usamos um rótulo estável e pedimos permissão como em qualquer
+// outro site, em vez de liberar por não saber classificar.
+function originLabelForTab(tab) {
+  const url = (tab && tab.url) || '';
+  let origin = 'null';
+  try { origin = new URL(url).origin; } catch (e) { /* url inválida */ }
+  if (origin && origin !== 'null') return origin;
+  if (/^file:/i.test(url)) return 'file:// (arquivos locais)';
+  return 'origem-opaca:' + url.split(/[?#]/)[0].slice(0, 80);
+}
+
+async function authorizeTabAccess(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  await authorizeOrigin(originLabelForTab(tab), tabId);
+  return tab;
+}
+
 async function handleDebuggerAction(action, payload) {
   // Respeita o tabId explícito quando o agente está operando várias abas;
   // sem isto, uma troca de aba entre a leitura e o clique faz a ação cair
@@ -942,27 +994,7 @@ async function handleDebuggerAction(action, payload) {
   var tabId = (payload && payload.tabId) ? parseInt(payload.tabId) : await getActiveTabId();
   if (!tabId) throw new Error("No active tab found");
 
-  const tab = await chrome.tabs.get(tabId);
-  const origin = new URL(tab.url).origin;
-
-  // Modo Autônomo: concede permissões automaticamente (sem pedir ao usuário)
-  const mode = await getAurexModeFromStorage();
-  if (mode === "autonomous") {
-    await PermissionManager.grantPermission(origin);
-  }
-
-  const decision = await PermissionManager.requirePermission(tabId, origin);
-  if (!decision.granted) {
-    if (decision.reason === 'pending') {
-      // O usuário ainda não decidiu. A tarefa NÃO falhou — o agente deve
-      // aguardar e tentar de novo, não declarar que não conseguiu.
-      throw new Error(`AGUARDANDO PERMISSÃO: o banner de permissão para ${origin} está na tela e o usuário ainda não decidiu. NÃO desista da tarefa e NÃO diga que falhou: use o comando wait (3000 a 5000 ms) e repita esta mesma ação até o usuário aprovar ou bloquear.`);
-    }
-    if (decision.reason === 'no-panel') {
-      throw new Error(`PERMISSÃO PENDENTE: o painel do Aurex está fechado, então não foi possível mostrar o pedido de permissão para ${origin}. Peça ao usuário para abrir o painel lateral do Aurex e então tente novamente.`);
-    }
-    throw new Error(`PERMISSÃO RECUSADA: o usuário bloqueou o acesso a ${origin}. Não tente acessar este site de novo; siga com outra abordagem ou pergunte ao usuário como proceder.`);
-  }
+  await authorizeTabAccess(tabId);
 
   await ensureDebuggerAttached(tabId);
 
@@ -1167,6 +1199,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   } else if (request.type === "recorder_event") {
     WorkflowRecorder.recordEvent(request.event);
+  }
+
+  // Gate de acesso para as ferramentas que NÃO passam pelo CDP
+  // (extract_page lê pelo content script, capture_screenshot usa a API de
+  // abas). Sem isto elas contornavam a permissão por completo.
+  if (request.type === "authorize_tab_access") {
+    const tabId = request.tabId ? parseInt(request.tabId) : null;
+    (tabId ? Promise.resolve(tabId) : getActiveTabId())
+      .then((id) => {
+        if (!id) throw new Error("Nenhuma aba ativa encontrada.");
+        return authorizeTabAccess(id).then((tab) => ({ id: id, tab: tab }));
+      })
+      .then((res) => sendResponse({ success: true, tabId: res.id, url: res.tab.url }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
+  }
+
+  // Mesmo gate para um destino de rede que o agente escolheu (web_fetch).
+  // Não há aba: a origem vem da própria URL.
+  if (request.type === "authorize_origin") {
+    authorizeOrigin(String(request.origin || ''), null)
+      .then(() => sendResponse({ success: true }))
+      .catch((err) => sendResponse({ success: false, error: err.message }));
+    return true;
   }
 
   // Revogar permissão de uma origem aprovada (a partir das Configurações)
