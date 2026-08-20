@@ -2352,3 +2352,25 @@ body.temp-chat .temp-chat-pill { display: inline-flex; }
 }
 .workflow-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .workflow-actions .action-btn { padding: 6px 10px; }
+
+/* --- Editor de fluxo gravado --- */
+.workflow-item { flex-direction: column; align-items: stretch; }
+.workflow-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.workflow-editor {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+.workflow-steps { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.workflow-step-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border-radius: 7px;
+}
+.workflow-step-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

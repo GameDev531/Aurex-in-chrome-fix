@@ -39,22 +39,46 @@ export class WorkflowRecorder {
           return path.join(" > ");
         }
 
+        // Âncoras redundantes do elemento. Um caminho CSS sozinho quebra ao
+        // primeiro rename de classe ou mudança de layout — a causa nº1 de
+        // falha de replay em produção. Guardamos várias formas de reencontrar
+        // o mesmo elemento e o replay tenta na ordem da mais estável.
+        function describeTarget(el) {
+          if (!(el instanceof Element)) return {};
+          var label = el.getAttribute('aria-label') ||
+            (el.labels && el.labels[0] && el.labels[0].innerText) || '';
+          return {
+            selector: getCssPath(el),
+            tag: el.tagName.toLowerCase(),
+            id: el.id || null,
+            nameAttr: el.getAttribute('name') || null,
+            testId: el.getAttribute('data-testid') || el.getAttribute('data-test') || null,
+            role: el.getAttribute('role') || null,
+            type: el.getAttribute('type') || null,
+            placeholder: el.getAttribute('placeholder') || null,
+            ariaLabel: label ? String(label).trim().substring(0, 80) : null,
+            text: (el.innerText || el.value || '').trim().substring(0, 80) || null,
+            url: location.href
+          };
+        }
+
         document.addEventListener('click', (e) => {
           if (!window.__aurexRecorderActive) return;
-          const selector = getCssPath(e.target);
           chrome.runtime.sendMessage({
             type: "recorder_event",
-            event: { type: "click", selector: selector, timestamp: Date.now() }
+            event: Object.assign({ type: "click", timestamp: Date.now() }, describeTarget(e.target))
           });
         }, true);
 
         document.addEventListener('change', (e) => {
           if (!window.__aurexRecorderActive) return;
-          if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
-            const selector = getCssPath(e.target);
+          if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
             chrome.runtime.sendMessage({
               type: "recorder_event",
-              event: { type: "type", selector: selector, value: e.target.value, timestamp: Date.now() }
+              event: Object.assign(
+                { type: "type", value: e.target.value, timestamp: Date.now() },
+                describeTarget(e.target)
+              )
             });
           }
         }, true);
@@ -96,7 +120,16 @@ export class WorkflowRecorder {
           selector: step.selector,
           value: step.value,
           url: step.url || null,
-          timestamp: step.timestamp
+          timestamp: step.timestamp,
+          // Âncoras de reserva contra deriva de seletor
+          tag: step.tag || null,
+          id: step.id || null,
+          nameAttr: step.nameAttr || null,
+          testId: step.testId || null,
+          role: step.role || null,
+          placeholder: step.placeholder || null,
+          ariaLabel: step.ariaLabel || null,
+          text: step.text || null
         };
       }),
       narration: '',

@@ -116,10 +116,41 @@ function isUsefulAXNode(node) {
   return !!(node.name && node.name.value);
 }
 
+// Caminho curto de ancestrais ("form > fieldset"). É o que permite distinguir
+// dois botões "Salvar" em seções diferentes da mesma página.
+const CONTEXT_ROLES = new Set([
+  'form', 'dialog', 'navigation', 'main', 'banner', 'contentinfo', 'search',
+  'table', 'list', 'article', 'region', 'tabpanel', 'group', 'menu', 'complementary'
+]);
+
+function attachAncestorPaths(nodes) {
+  var byAxId = new Map();
+  nodes.forEach(function (node) {
+    if (node.axId) byAxId.set(String(node.axId), node);
+  });
+
+  nodes.forEach(function (node) {
+    var trail = [];
+    var current = node.parentId ? byAxId.get(String(node.parentId)) : null;
+    var depth = 0;
+    while (current && depth < 12 && trail.length < 3) {
+      if (CONTEXT_ROLES.has(current.role)) {
+        var label = current.name ? current.role + '[' + current.name.substring(0, 24) + ']' : current.role;
+        trail.unshift(label);
+      }
+      current = current.parentId ? byAxId.get(String(current.parentId)) : null;
+      depth++;
+    }
+    if (trail.length) node.context = trail.join(' > ');
+  });
+  return nodes;
+}
+
 function filterAXTree(nodes, frameId) {
-  return nodes.filter(isUsefulAXNode).map(function (node) {
+  var mapped = nodes.filter(isUsefulAXNode).map(function (node) {
     return mapAXNode(node, frameId);
   });
+  return attachAncestorPaths(mapped);
 }
 
 // Envia um comando CDP diretamente a um TARGET (não à aba).
@@ -353,6 +384,16 @@ function scoreCandidate(node, ctx) {
     score += 15;
   }
 
+  // --- Contexto (desempata "Salvar" do formulário vs "Salvar" do menu) ---
+  if (node.context && ctx.terms.length) {
+    var contextText = normalizeText(node.context);
+    var contextHits = ctx.terms.filter(function (term) { return contextText.indexOf(term) !== -1; });
+    if (contextHits.length) {
+      score += 14;
+      reasons.push("contexto: " + node.context);
+    }
+  }
+
   // --- Estado / interatividade ---
   if (node.disabled) { score -= 35; reasons.push("desabilitado"); }
   if (node.focusable) score += 6;
@@ -391,6 +432,7 @@ function resolveElements(tree, query, roleFilter, limit) {
       role: node.role,
       name: node.name,
       value: node.value,
+      context: node.context,
       frameId: node.frameId,
       disabled: node.disabled || undefined,
       score: result.score,
@@ -402,11 +444,143 @@ function resolveElements(tree, query, roleFilter, limit) {
   return scored.slice(0, limit || 3);
 }
 
+// ========== INTERRUPÇÕES (BANNERS DE CONSENTIMENTO E MODAIS) ==========
+// Banner de cookie é o bloqueador prático mais comum: além de sobrecarregar
+// a leitura com texto jurídico irrelevante, muitos travam a página até
+// alguém clicar. Detectamos e resolvemos antes de o agente tentar trabalhar.
+const CONSENT_ACCEPT_SELECTORS = [
+  '#onetrust-accept-btn-handler',
+  '#onetrust-reject-all-handler',
+  '.ot-pc-refuse-all-handler',
+  'button[id*="accept" i][id*="cookie" i]',
+  'button[class*="accept" i][class*="cookie" i]',
+  '#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll',
+  '#CybotCookiebotDialogBodyButtonDecline',
+  'button[data-testid="uc-accept-all-button"]',
+  'button[aria-label*="aceitar" i]',
+  'button[aria-label*="accept" i]',
+  '.cc-allow', '.cc-dismiss', '.js-accept-cookies',
+  '#didomi-notice-agree-button',
+  '.fc-cta-consent'
+];
+
+// Textos usados nos botões, para o caso de nenhum seletor conhecido bater
+const CONSENT_TEXTS = [
+  'aceitar todos', 'aceitar tudo', 'aceitar cookies', 'aceitar e continuar',
+  'accept all', 'accept cookies', 'i accept', 'allow all',
+  'concordo', 'entendi', 'ok, entendi', 'prosseguir',
+  'aceptar todo', 'aceptar cookies'
+];
+
+async function dismissInterruptions(tabId) {
+  var expression = `(function(){
+    var accepted = null;
+    var SELECTORS = ${JSON.stringify(CONSENT_ACCEPT_SELECTORS)};
+    var TEXTS = ${JSON.stringify(CONSENT_TEXTS)};
+
+    function visible(el) {
+      if (!el) return false;
+      var rect = el.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) return false;
+      var style = getComputedStyle(el);
+      return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+    }
+
+    var CONSENT_WORDS = ['cookie', 'consent', 'consentimento', 'privacy', 'privacidade', 'lgpd', 'gdpr'];
+
+    // Um aviso de consentimento quase sempre está num container cujo id/classe
+    // menciona cookie/consent/lgpd, ou flutua sobre a página (fixed/sticky).
+    function looksLikeConsentContext(node) {
+      var el = node;
+      for (var depth = 0; el && depth < 8; depth++) {
+        var id = (el.id || '').toLowerCase();
+        var cls = (el.className && el.className.toString ? el.className.toString() : '').toLowerCase();
+        var aria = (el.getAttribute && el.getAttribute('aria-label') || '').toLowerCase();
+        for (var w = 0; w < CONSENT_WORDS.length; w++) {
+          if (id.indexOf(CONSENT_WORDS[w]) !== -1 ||
+              cls.indexOf(CONSENT_WORDS[w]) !== -1 ||
+              aria.indexOf(CONSENT_WORDS[w]) !== -1) {
+            return true;
+          }
+        }
+        try {
+          var pos = getComputedStyle(el).position;
+          if (pos === 'fixed' || pos === 'sticky') return true;
+        } catch (e) {}
+        if (el.getAttribute && el.getAttribute('role') === 'dialog') return true;
+        el = el.parentElement;
+      }
+      return false;
+    }
+
+    for (var i = 0; i < SELECTORS.length && !accepted; i++) {
+      try {
+        var el = document.querySelector(SELECTORS[i]);
+        if (visible(el)) { el.click(); accepted = SELECTORS[i]; }
+      } catch (e) {}
+    }
+
+    if (!accepted) {
+      var buttons = Array.prototype.slice.call(
+        document.querySelectorAll('button, [role="button"], a[href="#"], input[type="button"], input[type="submit"]')
+      ).slice(0, 400);
+      for (var b = 0; b < buttons.length && !accepted; b++) {
+        var node = buttons[b];
+        if (!visible(node)) continue;
+        // innerText cobre o caso comum, mas botões rotulados por aria-label
+        // (ícone + texto oculto) ficariam de fora sem os outros fallbacks.
+        var label = (node.innerText || node.textContent || node.value ||
+          (node.getAttribute && node.getAttribute('aria-label')) || '').trim().toLowerCase();
+        if (!label || label.length > 40) continue;
+        for (var t = 0; t < TEXTS.length; t++) {
+          if (label === TEXTS[t] || label.indexOf(TEXTS[t]) !== -1) {
+            // Só clica se o botão estiver mesmo dentro de um aviso de
+            // consentimento. Subimos os ancestrais na mão: closest() com flag
+            // case-insensitive não é confiável em todo ambiente, e um falso
+            // positivo aqui clicaria num botão real do site.
+            if (looksLikeConsentContext(node)) {
+              node.click();
+              accepted = 'texto: ' + label;
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    // Rolagem travada por modal aberto é outro sintoma clássico
+    var bodyStyle = getComputedStyle(document.body);
+    var scrollLocked = bodyStyle.overflow === 'hidden' || bodyStyle.position === 'fixed';
+    return JSON.stringify({ accepted: accepted, scrollLocked: scrollLocked });
+  })()`;
+
+  try {
+    var res = await executeCDPCommand(tabId, "Runtime.evaluate", {
+      expression: expression,
+      returnByValue: true,
+      awaitPromise: false
+    });
+    var parsed = JSON.parse(res.result.value);
+    if (parsed.accepted) {
+      // Dá tempo do banner sumir e a página liberar o conteúdo
+      await new Promise(function (r) { setTimeout(r, 500); });
+    }
+    return parsed;
+  } catch (e) {
+    return { accepted: null, scrollLocked: false };
+  }
+}
+
 // ========== REPLAY DE WORKFLOW ==========
 // Reexecuta um fluxo gravado. Cada passo é verificado: se o elemento não
 // aparecer, o replay PARA e diz onde parou — em vez de seguir cegamente e
 // deixar a página num estado imprevisível.
+function cssEscapeValue(value) {
+  return String(value).replace(/["\\]/g, '\\$&');
+}
+
 async function resolveSelectorToNodeId(tabId, selector) {
+  if (!selector) return null;
   var doc = await executeCDPCommand(tabId, "DOM.getDocument", { depth: -1 });
   var found = await executeCDPCommand(tabId, "DOM.querySelector", {
     nodeId: doc.root.nodeId,
@@ -417,29 +591,84 @@ async function resolveSelectorToNodeId(tabId, selector) {
   return described && described.node ? described.node.backendNodeId : null;
 }
 
+// Deriva de seletor é a maior causa de replay quebrado: basta um rename de
+// classe para o caminho CSS gravado deixar de existir. Por isso tentamos
+// várias âncoras, da mais estável para a mais frágil, e reportamos qual delas
+// funcionou — assim o usuário sabe que o fluxo está envelhecendo.
+async function resolveStepToNodeId(tabId, step) {
+  var attempts = [];
+
+  if (step.testId) {
+    attempts.push({ how: 'data-testid', selector: '[data-testid="' + cssEscapeValue(step.testId) + '"]' });
+  }
+  if (step.id) {
+    attempts.push({ how: 'id', selector: idSelector(step.id) });
+  }
+  if (step.nameAttr) {
+    attempts.push({ how: 'name', selector: (step.tag || '') + '[name="' + cssEscapeValue(step.nameAttr) + '"]' });
+  }
+  if (step.ariaLabel) {
+    attempts.push({ how: 'aria-label', selector: '[aria-label="' + cssEscapeValue(step.ariaLabel) + '"]' });
+  }
+  if (step.placeholder) {
+    attempts.push({ how: 'placeholder', selector: '[placeholder="' + cssEscapeValue(step.placeholder) + '"]' });
+  }
+  // O caminho CSS é o mais frágil: fica por último, não primeiro
+  if (step.selector) {
+    attempts.push({ how: 'caminho CSS', selector: step.selector });
+  }
+
+  for (var i = 0; i < attempts.length; i++) {
+    try {
+      var nodeId = await resolveSelectorToNodeId(tabId, attempts[i].selector);
+      if (nodeId) return { backendNodeId: nodeId, how: attempts[i].how };
+    } catch (e) { /* seletor inválido nesta página: tenta o próximo */ }
+  }
+
+  // Último recurso: procurar pelo texto visível, via árvore de acessibilidade
+  if (step.text) {
+    try {
+      var read = await getAccessibilityTreeAllFrames(tabId);
+      var matches = resolveElements(read.tree, step.text, null, 1);
+      if (matches.length && matches[0].score >= 90) {
+        return { backendNodeId: matches[0].id, how: 'texto visivel' };
+      }
+    } catch (e) { /* sem árvore: desiste */ }
+  }
+
+  return null;
+}
+
+// '#id' quebra quando o id tem caracteres especiais (comum em frameworks):
+// nesse caso caímos na forma por atributo, que aceita qualquer valor.
+function idSelector(id) {
+  return /^[A-Za-z][\w-]*$/.test(id) ? '#' + id : '[id="' + cssEscapeValue(id) + '"]';
+}
+
 async function replayWorkflow(tabId, workflow, options) {
   options = options || {};
   var stepTimeout = options.step_timeout_ms || 8000;
   var results = [];
+  var degradedSteps = 0;
 
   for (var i = 0; i < workflow.steps.length; i++) {
     var step = workflow.steps[i];
     var record = { index: i, type: step.type, selector: step.selector };
 
     // Espera o elemento existir: a página pode ainda estar renderizando
-    var backendNodeId = null;
+    var resolved = null;
     var start = Date.now();
     while (Date.now() - start < stepTimeout) {
       try {
-        backendNodeId = await resolveSelectorToNodeId(tabId, step.selector);
-        if (backendNodeId) break;
+        resolved = await resolveStepToNodeId(tabId, step);
+        if (resolved) break;
       } catch (e) { /* documento trocando: tenta de novo */ }
       await new Promise(function (r) { setTimeout(r, 250); });
     }
 
-    if (!backendNodeId) {
+    if (!resolved) {
       record.success = false;
-      record.error = "Elemento nao encontrado: " + step.selector;
+      record.error = "Elemento nao encontrado: " + (step.selector || step.text || 'sem ancora');
       results.push(record);
       return {
         success: false,
@@ -450,6 +679,11 @@ async function replayWorkflow(tabId, workflow, options) {
         hint: "A pagina provavelmente mudou desde a gravacao. Grave o fluxo de novo ou faca este passo manualmente."
       };
     }
+
+    var backendNodeId = resolved.backendNodeId;
+    record.matched_by = resolved.how;
+    // Ter caído numa âncora de reserva é sinal de que o fluxo está envelhecendo
+    if (resolved.how !== 'caminho CSS') degradedSteps++;
 
     try {
       if (step.type === "click") {
@@ -475,13 +709,19 @@ async function replayWorkflow(tabId, workflow, options) {
     await new Promise(function (r) { setTimeout(r, 350); }); // deixa a página reagir
   }
 
-  return {
+  var summary = {
     success: true,
     completed_steps: workflow.steps.length,
     total_steps: workflow.steps.length,
     results: results,
     message: "Fluxo \"" + workflow.name + "\" reexecutado: " + workflow.steps.length + " passo(s)."
   };
+  if (degradedSteps) {
+    summary.degraded_steps = degradedSteps;
+    summary.hint = degradedSteps + " passo(s) so foram encontrados por ancora alternativa (a pagina mudou desde a gravacao). " +
+      "O fluxo ainda funciona, mas vale regravar antes que quebre de vez.";
+  }
+  return summary;
 }
 
 // ========== VERIFICAÇÃO PÓS-AÇÃO ==========
@@ -735,6 +975,13 @@ async function handleDebuggerAction(action, payload) {
   }
 
   if (action === "get_accessibility_tree") {
+    // Resolve banner de consentimento ANTES de ler: senão o agente gasta
+    // contexto com texto jurídico e, pior, tenta clicar em elementos que
+    // estão atrás de um modal bloqueante.
+    var interruption = payload && payload.skip_interruptions
+      ? { accepted: null }
+      : await dismissInterruptions(tabId);
+
     var axRead = await getAccessibilityTreeAllFrames(tabId);
 
     if (!InjectionGuard.validateAXTree(axRead.tree)) {
@@ -753,10 +1000,15 @@ async function handleDebuggerAction(action, payload) {
       response.note = "Arvore truncada: " + capped.omitted + " de " + capped.totalNodes +
         " nos omitidos (elementos interativos foram preservados). Use find_element para localizar algo especifico.";
     }
+    if (interruption && interruption.accepted) {
+      response.interruption_dismissed = interruption.accepted;
+    }
     return response;
   }
 
   if (action === "find_element") {
+    // Mesmo motivo do get_accessibility_tree: um modal aberto esconde o alvo
+    if (!(payload && payload.skip_interruptions)) await dismissInterruptions(tabId);
     var findRead = await getAccessibilityTreeAllFrames(tabId);
 
     if (!InjectionGuard.validateAXTree(findRead.tree)) {

@@ -4322,6 +4322,81 @@ function setupTeachPanel() {
   }
 }
 
+// Editor do fluxo: renomear e remover passos. Gravações reais quase sempre
+// têm cliques acidentais que o usuário precisa poder tirar.
+function buildWorkflowEditor(name, raw, steps) {
+  var editor = document.createElement('div');
+  editor.className = 'workflow-editor hidden';
+
+  var nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.className = 'setting-select';
+  nameInput.value = name;
+  nameInput.placeholder = t('teach.namePlaceholder');
+  editor.appendChild(nameInput);
+
+  var stepList = document.createElement('div');
+  stepList.className = 'workflow-steps';
+  var working = steps.slice();
+
+  function renderSteps() {
+    stepList.innerHTML = '';
+    if (!working.length) {
+      stepList.innerHTML = '<div class="approved-sites-empty">' + escapeHtml(t('teach.noSteps')) + '</div>';
+      return;
+    }
+    working.forEach(function (step, index) {
+      var row = document.createElement('div');
+      row.className = 'workflow-step-row';
+
+      var desc = document.createElement('span');
+      var alvo = step.text || step.ariaLabel || step.placeholder || step.id || step.selector || '?';
+      desc.textContent = (index + 1) + '. ' +
+        (step.type === 'click' ? t('teach.stepClick') : t('teach.stepType')) + ' ' +
+        String(alvo).substring(0, 44) +
+        (step.type === 'type' && step.value ? ' = "' + String(step.value).substring(0, 20) + '"' : '');
+      row.appendChild(desc);
+
+      var remove = document.createElement('button');
+      remove.className = 'icon-btn';
+      remove.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+      remove.title = t('common.delete');
+      remove.addEventListener('click', function () {
+        working.splice(index, 1);
+        renderSteps();
+      });
+      row.appendChild(remove);
+      stepList.appendChild(row);
+    });
+  }
+  renderSteps();
+  editor.appendChild(stepList);
+
+  var saveBtn = document.createElement('button');
+  saveBtn.className = 'action-btn primary';
+  saveBtn.style.marginTop = '10px';
+  saveBtn.innerHTML = '<i class="fa-solid fa-check"></i> ' + escapeHtml(t('common.save'));
+  saveBtn.addEventListener('click', function () {
+    var newName = (nameInput.value || '').trim() || name;
+    var updated = {
+      version: 1,
+      name: newName,
+      steps: working.map(function (s, i) { return Object.assign({}, s, { index: i }); }),
+      narration: (raw && raw.narration) || '',
+      createdAt: (raw && raw.createdAt) || Date.now()
+    };
+    chrome.storage.local.get(['aurex_workflows'], function (result) {
+      var workflows = (result && result.aurex_workflows) || {};
+      if (newName !== name) delete workflows[name]; // renomeou: remove a chave antiga
+      workflows[newName] = updated;
+      chrome.storage.local.set({ aurex_workflows: workflows }, renderWorkflowsList);
+    });
+  });
+  editor.appendChild(saveBtn);
+
+  return editor;
+}
+
 // Lista os fluxos gravados com ações diretas — antes o usuário gravava e
 // nunca mais via o resultado, porque nada lia de volta.
 function renderWorkflowsList() {
@@ -4371,6 +4446,18 @@ function renderWorkflowsList() {
         sendUserMessage('Reexecute o fluxo gravado chamado "' + name + '" na aba atual.');
       });
 
+      // Editar: renomear e apagar passos. Um fluxo gravado quase sempre tem
+      // cliques acidentais no meio que o usuário quer remover.
+      var editBtn = document.createElement('button');
+      editBtn.className = 'icon-btn';
+      editBtn.innerHTML = '<i class="fa-solid fa-pen"></i>';
+      editBtn.title = t('teach.edit');
+      editBtn.addEventListener('click', function () {
+        item.classList.toggle('editing');
+        var editor = item.querySelector('.workflow-editor');
+        if (editor) editor.classList.toggle('hidden');
+      });
+
       var delBtn = document.createElement('button');
       delBtn.className = 'icon-btn';
       delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
@@ -4384,9 +4471,15 @@ function renderWorkflowsList() {
       });
 
       actions.appendChild(playBtn);
+      actions.appendChild(editBtn);
       actions.appendChild(delBtn);
-      item.appendChild(info);
-      item.appendChild(actions);
+
+      var row = document.createElement('div');
+      row.className = 'workflow-row';
+      row.appendChild(info);
+      row.appendChild(actions);
+      item.appendChild(row);
+      item.appendChild(buildWorkflowEditor(name, raw, steps));
       list.appendChild(item);
     });
   });
