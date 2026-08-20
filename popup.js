@@ -1190,6 +1190,7 @@ function resetChatUI() {
   _planApproved = false; // conversa nova volta a exigir aprovação do plano
   resetTaskOrigin();     // e volta a vigiar o domínio do zero
   clearTaskState();      // estado de retomada pertence à conversa anterior
+  resetUsage();          // o contador de consumo é por conversa
   chatHistory = [{ role: "system", content: SYSTEM_PROMPT }];
   let newTask = localStorage.getItem("aurex_active_task");
   if (newTask) chatHistory[0].content += "\n\n# MEMORIA DA TAREFA ATIVA:\n" + newTask;
@@ -2200,7 +2201,18 @@ async function processLLMLoop(iterationCount = 0) {
         });
       }
 
-      requestMessages[0] = { ...requestMessages[0], content: requestMessages[0].content + extraDirectives };
+      // O prompt do sistema é grande e ESTÁTICO; as diretivas mudam a cada
+      // passo (estado da tarefa, ferramentas ativas). Concatenar os dois fazia
+      // a mensagem inteira mudar toda requisição e destruía o cache de
+      // prefixo do provedor — reprocessando ~15 KB a preço cheio a cada passo
+      // de uma tarefa longa. Mantendo a mensagem 0 byte a byte idêntica, ela
+      // volta a ser cacheável, e só o bloco volátil é reprocessado.
+      if (extraDirectives) {
+        requestMessages.splice(1, 0, {
+          role: "system",
+          content: "# CONTEXTO DESTA REQUISICAO" + extraDirectives
+        });
+      }
     }
 
     let response = await fetch(apiUrl, {
@@ -2258,6 +2270,12 @@ async function processLLMLoop(iterationCount = 0) {
     }
 
     const data = await response.json();
+
+    // O provedor devolve o consumo em cada resposta; até agora era descartado,
+    // e o usuário não tinha ideia do que uma tarefa longa custava (com chave
+    // própria, quem paga a conta é ele).
+    if (data.usage) recordUsage(data.usage);
+
     const responseMsg = data.choices[0].message;
 
     chatHistory.push(responseMsg);
@@ -3796,6 +3814,51 @@ async function executeGooglePlaces(args) {
   } catch (err) {
     return { success: false, error: scrubSecrets("Falha na Places API: " + err.message) };
   }
+}
+
+// ========== CONSUMO / CUSTO ==========
+// Tarefas agentivas consomem muito mais que um chat comum, e cada passo
+// reenvia o histórico. Sem medição, o usuário só descobre no fim do mês.
+var _usage = { prompt: 0, completion: 0, cached: 0, requests: 0 };
+
+function recordUsage(usage) {
+  _usage.requests++;
+  _usage.prompt += usage.prompt_tokens || 0;
+  _usage.completion += usage.completion_tokens || 0;
+  // Nomes variam entre provedores
+  var cached = (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) ||
+    usage.prompt_cache_hit_tokens || 0;
+  _usage.cached += cached;
+  renderUsageBadge();
+}
+
+function resetUsage() {
+  _usage = { prompt: 0, completion: 0, cached: 0, requests: 0 };
+  renderUsageBadge();
+}
+
+function formatTokens(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return String(n);
+}
+
+function renderUsageBadge() {
+  var badge = document.getElementById('usage-badge');
+  if (!badge) return;
+  var total = _usage.prompt + _usage.completion;
+  if (!total) { badge.style.display = 'none'; return; }
+
+  badge.style.display = 'inline-flex';
+  var label = badge.querySelector('.usage-value');
+  if (label) label.textContent = formatTokens(total);
+
+  var cacheRate = _usage.prompt ? Math.round((_usage.cached / _usage.prompt) * 100) : 0;
+  badge.title = t('usage.title') + '\n' +
+    '• ' + t('usage.requests') + ': ' + _usage.requests + '\n' +
+    '• ' + t('usage.input') + ': ' + formatTokens(_usage.prompt) +
+    (_usage.cached ? ' (' + cacheRate + '% ' + t('usage.cached') + ')' : '') + '\n' +
+    '• ' + t('usage.output') + ': ' + formatTokens(_usage.completion);
 }
 
 // ========== ESTADO DA TAREFA (retomada de trabalho longo) ==========

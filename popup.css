@@ -2374,3 +2374,24 @@ body.temp-chat .temp-chat-pill { display: inline-flex; }
   border-radius: 7px;
 }
 .workflow-step-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --- Medidor de consumo da conversa --- */
+.usage-badge {
+  display: none;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  margin-right: 8px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--text-muted, #6b6f7d);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  cursor: help;
+  white-space: nowrap;
+}
+.usage-badge i { font-size: 10px; }
+body.temp-chat .usage-badge { margin-left: 0; }
