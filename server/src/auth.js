@@ -14,6 +14,22 @@ import {
   revokeRefreshToken
 } from './db.js';
 
+// Escape completo para valor de atributo HTML.
+//
+// Antes só a aspa dupla era trocada, à mão, no meio do template. Não era
+// explorável ali (o valor fica entre aspas duplas), mas um escapador que
+// cobre um caractere só é uma armadilha: basta alguém mudar a citação para
+// aspas simples, ou mover o valor para fora do atributo, e vira XSS sem que
+// nada no código pareça ter mudado de risco.
+function escapeHtmlAttr(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 60;              // 1h
 const REFRESH_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 dias
 const AUTH_CODE_TTL_MS = 1000 * 60 * 5;                // 5 min
@@ -157,7 +173,7 @@ export function registerAuthRoutes(app) {
 <form method="POST" action="/auth/dev-login">
   <h1>Entrar no Aurex</h1>
   <p>Login de desenvolvimento (Google OAuth não configurado no servidor).</p>
-  <input type="hidden" name="state" value="${String(state).replace(/"/g, '&quot;')}">
+  <input type="hidden" name="state" value="${escapeHtmlAttr(state)}">
   <input name="name" placeholder="Seu nome" required maxlength="40">
   <input name="email" type="email" placeholder="Seu email (opcional)">
   <button type="submit">Continuar</button>

@@ -21,16 +21,39 @@ export function usingPostgres() {
   return pool !== null;
 }
 
+// TLS do banco, COM verificação de certificado.
+//
+// Antes era sempre `rejectUnauthorized: false`, o que é pior do que parece:
+// a flag se chama DATABASE_SSL=true, então quem a liga acredita ter deixado a
+// conexão segura — e recebia criptografia sem autenticação, ou seja, aberta a
+// man-in-the-middle, com um banco de credenciais de usuário atrás. Aceitar
+// certificado auto-assinado passa a ser uma escolha SEPARADA e explícita.
+//
+// Exportada para poder ser testada sem abrir conexão de verdade.
+export function resolveDbSsl(env = process.env, warn = console.warn) {
+  const mode = String(env.DATABASE_SSL || '').toLowerCase();
+  if (mode !== 'true' && mode !== 'require') return false;
+
+  if (env.DATABASE_SSL_INSECURE === 'true') {
+    warn('[Aurex DB] AVISO: DATABASE_SSL_INSECURE=true — o certificado do banco NÃO será verificado. Use apenas em desenvolvimento.');
+    // nosemgrep: bypass-tls-verification -- escape deliberado, exigindo uma
+    // variável própria e gritando no log. A verificação é o padrão acima.
+    return { rejectUnauthorized: false };
+  }
+
+  return env.DATABASE_SSL_CA
+    ? { rejectUnauthorized: true, ca: env.DATABASE_SSL_CA }
+    : { rejectUnauthorized: true };
+}
+
 export async function initDb() {
   const url = process.env.DATABASE_URL;
   if (!url) {
     console.warn('[Aurex DB] DATABASE_URL ausente — usando armazenamento em memória.');
     return;
   }
-  pool = new Pool({
-    connectionString: url,
-    ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false
-  });
+
+  pool = new Pool({ connectionString: url, ssl: resolveDbSsl() });
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS aurex_users (

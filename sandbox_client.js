@@ -114,7 +114,19 @@ var AurexSandbox = (function () {
         code: err.code || ('http_' + res.status)
       };
     }
-    return Object.assign({ success: true }, data);
+    // Merge sem os setters do Object.assign. `data` vem de JSON.parse da
+    // resposta do servidor; se ela trouxer "__proto__", Object.assign dispara
+    // o setter e troca o protótipo do objeto que vamos devolver ao modelo.
+    // O impacto é contido (não polui Object.prototype), mas montar o objeto
+    // por descritor custa uma linha e tira a dúvida.
+    var merged = { success: true };
+    if (data && typeof data === 'object') {
+      Object.keys(data).forEach(function (key) {
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') return;
+        merged[key] = data[key];
+      });
+    }
+    return merged;
   }
 
   async function exec(spec) {
