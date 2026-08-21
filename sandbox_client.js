@@ -54,10 +54,14 @@ var AurexSandbox = (function () {
       _probe = {
         enabled: !!sandbox.enabled,
         ready: !!sandbox.ready,
+        // Rede é opt-in do OPERADOR (AUREX_SANDBOX_ALLOW_NETWORK). Quando
+        // ligada, o modelo pode pedir internet por execução — é o que permite
+        // npm install / pip install e, com isso, montar um projeto de verdade.
+        allowNetwork: !!sandbox.allow_network,
         reason: sandbox.reason || (sandbox.enabled ? null : 'Sandbox desativada no servidor.')
       };
     } catch (err) {
-      _probe = { enabled: false, ready: false, reason: 'Servidor Aurex inacessível: ' + err.message };
+      _probe = { enabled: false, ready: false, allowNetwork: false, reason: 'Servidor Aurex inacessível: ' + err.message };
     }
     _probedAt = Date.now();
     return _probe;

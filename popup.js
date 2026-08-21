@@ -249,6 +249,7 @@ var SYSTEM_PROMPT = "Voc\u00ea \u00e9 o Aurex, um Web Agent inteligente integrad
 "2. WEB TOOLS \u2014 informa\u00e7\u00e3o da web sem depender da aba aberta: web_search (busca na internet), web_fetch (baixa e l\u00ea uma URL diretamente) e extract_page (extrai o conte\u00fado leg\u00edvel da aba atual).\n" +
 "3. EXTERNAL TOOLS \u2014 dados oficiais de servi\u00e7os externos: google_places (locais, endere\u00e7os e avalia\u00e7\u00f5es via Google Places API New) e api_request (qualquer API que o usu\u00e1rio tenha configurado).\n" +
 "4. SANDBOX (quando ativa) \u2014 computa\u00e7\u00e3o real no servidor: run_command (shell), run_code (Python/Node/Bash) e sandbox_files. O workspace persiste durante toda a conversa. Use para PRODUZIR ARQUIVOS DE VERDADE: .docx (python-docx), .xlsx (openpyxl), .pptx (python-pptx), .pdf (reportlab), gr\u00e1ficos (matplotlib), al\u00e9m de processar dados e converter formatos. Depois de gerar, entregue com sandbox_files command='deliver'.\n" +
+"PROJETOS DE C\u00d3DIGO: quando a internet da sandbox estiver permitida (veja ESTADO DAS FERRAMENTAS), voc\u00ea monta um projeto de verdade \u2014 cria o scaffold, instala depend\u00eancias com network=true, escreve os arquivos, roda o type-check e o build, e l\u00ea a sa\u00edda para confirmar que compilou. N\u00c3O entregue c\u00f3digo que voc\u00ea nunca compilou dizendo que est\u00e1 pronto: rode o build e mostre o resultado. Se o build falhar, leia o erro e corrija antes de responder.\n" +
 "REGRA DE ESCOLHA: para um fato ou pesquisa ampla, prefira web_search/web_fetch (r\u00e1pido e sem abrir abas). Para dados de lugares/mapas, use google_places em vez de raspar o site do Maps. Para agir dentro de um site (logar, preencher, clicar, baixar algo de uma conta), use as Browser Tools na aba.\n" +
 "Se uma ferramenta externa n\u00e3o estiver configurada, explique ao usu\u00e1rio em uma frase que ele pode adicionar a chave em Configura\u00e7\u00f5es \u25b8 Integra\u00e7\u00f5es e ofere\u00e7a seguir por outro caminho.\n\n" +
 "# PROGRAMA\u00c7\u00c3O (SOMENTE QUANDO FOR PEDIDO)\n" +
@@ -583,12 +584,13 @@ const TOOLS = [
     type: "function",
     function: {
       name: "run_command",
-      description: "SANDBOX: executa um comando de shell num container Linux isolado NO SERVIDOR Aurex (nao no computador do usuario). O diretorio de trabalho persiste durante toda a conversa, entao arquivos criados por um comando ficam disponiveis para o proximo. Ja vem com python3, node 20 e as bibliotecas python-docx, openpyxl, python-pptx, reportlab, pypdf, pandas, matplotlib e Pillow. Use para inspecionar o workspace, converter arquivos e rodar processos. NAO ha acesso a internet dentro do container.",
+      description: "SANDBOX: executa um comando de shell num container Linux isolado NO SERVIDOR Aurex (nao no computador do usuario). O diretorio de trabalho persiste durante toda a conversa, entao arquivos criados por um comando ficam disponiveis para o proximo. Ja vem com python3, node 20 e as bibliotecas python-docx, openpyxl, python-pptx, reportlab, pypdf, pandas, matplotlib e Pillow. Use para inspecionar o workspace, instalar dependencias, compilar e rodar testes. Por padrao a execucao roda SEM internet; veja o parametro network.",
       parameters: {
         type: "object",
         properties: {
-          command: { type: "string", description: "Comando bash. Ex: 'ls -la', 'python3 gerar.py', 'wc -l dados.csv'" },
-          timeout_ms: { type: "number", description: "Tempo maximo em ms (padrao 120000)" }
+          command: { type: "string", description: "Comando bash. Ex: 'ls -la', 'npm install', 'npm run build', 'python3 gerar.py'" },
+          network: { type: "boolean", description: "Liga a internet SO NESTA execucao. Necessario para npm install, pip install, git clone e baixar fontes. Use quando o comando precisa buscar algo da rede; deixe de fora no resto (sem rede o container nao tem por onde vazar o que leu). Se o servidor nao permitir rede, a chamada falha com network_not_allowed." },
+          timeout_ms: { type: "number", description: "Tempo maximo em ms (padrao 120000). Instalacao de dependencias costuma precisar de mais: use 300000." }
         },
         required: ["command"]
       }
@@ -606,6 +608,7 @@ const TOOLS = [
           code: { type: "string", description: "Codigo completo e funcional, sem cercas ```" },
           filename: { type: "string", description: "Nome do arquivo no workspace. Ex: gerar_relatorio.py" },
           args: { type: "array", items: { type: "string" }, description: "Argumentos de linha de comando" },
+          network: { type: "boolean", description: "Liga a internet SO NESTA execucao (ver run_command). Deixe de fora quando o script nao precisa da rede." },
           timeout_ms: { type: "number", description: "Tempo maximo em ms (padrao 120000)" }
         },
         required: ["language", "code"]
@@ -1741,11 +1744,14 @@ function appendToolCallToUI(name, args) {
     else humanMessage = "🗑️ Removendo fluxo: " + (args.name || "");
   }
   else if (name === "run_command") {
-    humanMessage = "⚙️ Executando na sandbox: " + String(args.command || "").substring(0, 60);
+    // A rede é a diferença que o usuário precisa enxergar: com ela o
+    // container passa a ter por onde falar com fora.
+    humanMessage = (args.network === true ? "🌐 Executando na sandbox COM internet: " : "⚙️ Executando na sandbox: ") +
+      String(args.command || "").substring(0, 60);
   }
   else if (name === "run_code") {
     var langLabel = { python: "Python", node: "Node", bash: "Bash" }[args.language] || args.language;
-    humanMessage = "🧪 Rodando código " + langLabel + " na sandbox...";
+    humanMessage = (args.network === true ? "🌐 Rodando código " + langLabel + " na sandbox COM internet..." : "🧪 Rodando código " + langLabel + " na sandbox...");
   }
   else if (name === "sandbox_files") {
     if (args.command === "deliver") humanMessage = "📦 Entregando arquivo: " + (args.path || "");
@@ -2045,7 +2051,10 @@ function _getToolSignature(toolCall) {
       // Scripts distintos não podem colidir na mesma assinatura de loop
       args.filename,
       args.code ? String(args.code).slice(0, 80) : undefined,
-      args.command
+      args.command,
+      // Repetir o mesmo comando AGORA COM REDE é a recuperação correta de um
+      // "npm install" que falhou sem rede — não pode contar como loop.
+      args.network === true ? 'net' : undefined
     ].filter(function(value) {
       return value !== undefined && value !== null && value !== '';
     }).join('|').substring(0, 160);
@@ -3111,7 +3120,7 @@ function executeToolInBrowser(name, args) {
         });
       });
     } else if (name === "run_command") {
-      AurexSandbox.exec({ command: args.command, timeout_ms: args.timeout_ms })
+      AurexSandbox.exec({ command: args.command, network: args.network === true, timeout_ms: args.timeout_ms })
         .then(function (res) { resolve(shapeSandboxResult(res)); });
     } else if (name === "run_code") {
       AurexSandbox.exec({
@@ -3119,6 +3128,7 @@ function executeToolInBrowser(name, args) {
         code: args.code,
         filename: args.filename,
         args: args.args,
+        network: args.network === true,
         timeout_ms: args.timeout_ms
       }).then(function (res) { resolve(shapeSandboxResult(res)); });
     } else if (name === "sandbox_files") {
@@ -3933,7 +3943,13 @@ function getToolingDirective() {
 
   var sandbox = (typeof AurexSandbox !== 'undefined') ? AurexSandbox.cached() : null;
   if (sandbox && sandbox.ready) {
-    lines.push("- run_command / run_code / sandbox_files: ATIVAS (container Docker isolado no servidor, sem rede, workspace persistente por conversa). Use para gerar arquivos reais (.docx, .xlsx, .pdf, graficos) e depois entregar com sandbox_files command='deliver'.");
+    lines.push("- run_command / run_code / sandbox_files: ATIVAS (container Docker isolado no servidor, workspace persistente por conversa). " +
+      "Use para gerar arquivos reais (.docx, .xlsx, .pdf, graficos) e entregar com sandbox_files command='deliver'.");
+    lines.push(sandbox.allowNetwork
+      ? "- Internet na sandbox: PERMITIDA por execucao. Passe network=true no run_command para 'npm install', 'pip install', 'git clone' ou baixar fontes — e use timeout_ms=300000 nessas. " +
+        "Isso significa que voce PODE montar um projeto de verdade: criar o scaffold, instalar dependencias, rodar o build e checar o resultado. Sem rede no resto das execucoes."
+      : "- Internet na sandbox: DESLIGADA no servidor. 'npm install' e 'pip install' vao falhar; use apenas o que ja vem na imagem (python3, node 20, python-docx, openpyxl, python-pptx, reportlab, pandas, matplotlib, Pillow). " +
+        "Se a tarefa exigir baixar pacotes, diga ao usuario que ele pode ligar AUREX_SANDBOX_ALLOW_NETWORK=true no servidor.");
   } else {
     lines.push("- run_command / run_code / sandbox_files: INDISPONIVEIS" +
       (sandbox && sandbox.reason ? " (" + sandbox.reason + ")" : "") +

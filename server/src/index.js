@@ -57,7 +57,11 @@ app.get('/health', (req, res) => {
     // de build aqui — o detalhe fica no /v1/sandbox/health, que exige token.
     sandbox: {
       enabled: sandboxCfg.enabled,
-      ready: sandboxState.ready
+      ready: sandboxState.ready,
+      // A extensão precisa saber disto para dizer ao modelo se ele PODE pedir
+      // rede numa execução. Sem o campo, ela assumia "nunca há internet" e a
+      // capacidade ficava inalcançável mesmo com o operador tendo ligado.
+      allow_network: sandboxCfg.allowNetwork
     }
   });
 });

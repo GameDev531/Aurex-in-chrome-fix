@@ -122,6 +122,16 @@ dessa lista, tem duas saídas: **adicionar ao `requirements.txt` e reconstruir a
 imagem** (recomendado — mantém o container sem rede), ou ligar
 `AUREX_SANDBOX_ALLOW_NETWORK=true` aceitando o risco descrito abaixo.
 
+**A rede é por execução, não um interruptor global.** `AUREX_SANDBOX_ALLOW_NETWORK`
+é a permissão do operador; com ela ligada, cada chamada decide se quer rede
+(`network: true` no corpo do `/exec`, exposto ao agente como parâmetro das
+ferramentas `run_command` e `run_code`). As execuções que não pedem continuam
+com `--network none`. É o que permite ao agente montar um projeto de verdade —
+scaffold, `npm install`, build — sem deixar o container com saída de rede
+durante todo o resto da conversa, que é quando ele está processando conteúdo
+lido de páginas web. A interface do Aurex marca com 🌐 as execuções que tiveram
+rede, para a diferença ficar visível.
+
 ### Limitações honestas
 
 - **Sem rede no container, por padrão.** O que a imagem não trouxer, não roda —
