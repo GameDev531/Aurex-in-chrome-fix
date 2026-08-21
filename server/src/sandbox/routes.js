@@ -10,6 +10,7 @@ import { authenticate, requireIdentifiedUser, asyncRoute } from '../middleware.j
 import { sandboxError, toHttpError } from './errors.js';
 import { acquireSlot, checkRateLimit } from './limits.js';
 import { runInContainer, buildHint, assertNetworkAllowed } from './docker.js';
+import { startService, serviceStatus, stopService, assertServicesAllowed } from './services.js';
 import {
   ensureWorkspace, assertValidSessionId, resolveInWorkspace, listFiles,
   readFileForApi, writeFileToWorkspace, deleteFromWorkspace,
@@ -52,6 +53,7 @@ export function registerSandboxRoutes(app, deps) {
       reason: state.reason || null,
       image: cfg.image,
       allow_network: cfg.allowNetwork,
+      allow_services: cfg.allowServices,
       limits: {
         timeout_ms: cfg.timeoutMs,
         max_timeout_ms: cfg.maxTimeoutMs,
@@ -257,8 +259,45 @@ export function registerSandboxRoutes(app, deps) {
     res.send(data);
   }));
 
+  // --- Serviços de longa duração (preview server, watcher) ---
+  router.post('/sessions/:sid/service', asyncRoute(async (req, res) => {
+    const { sessionId, dir } = await openWorkspace(req);
+    assertServicesAllowed(cfg);
+    const body = req.body || {};
+    const command = String(body.command || '').trim();
+    if (!command) throw sandboxError('invalid_request', 'command é obrigatório para subir um serviço.');
+
+    checkRateLimit(req.aurexOwnerKey, cfg.ratePerMin);
+    const result = await startService({
+      cfg,
+      ownerKey: req.aurexOwnerKey,
+      sessionId,
+      workspaceDir: dir,
+      command,
+      port: body.port
+    });
+    res.json(Object.assign({ session_id: sessionId }, result));
+  }));
+
+  router.get('/sessions/:sid/service', asyncRoute(async (req, res) => {
+    requireReady();
+    const sessionId = assertValidSessionId(req.params.sid);
+    const result = await serviceStatus({ cfg, ownerKey: req.aurexOwnerKey, sessionId });
+    res.json(Object.assign({ session_id: sessionId }, result));
+  }));
+
+  router.delete('/sessions/:sid/service', asyncRoute(async (req, res) => {
+    requireReady();
+    const sessionId = assertValidSessionId(req.params.sid);
+    const result = await stopService({ cfg, ownerKey: req.aurexOwnerKey, sessionId });
+    res.json(Object.assign({ session_id: sessionId }, result));
+  }));
+
   router.delete('/sessions/:sid', asyncRoute(async (req, res) => {
     const sessionId = assertValidSessionId(req.params.sid);
+    // Derruba o serviço ANTES de apagar o diretório: um container montando um
+    // workspace que sumiu fica num estado que só `docker rm -f` resolve.
+    await stopService({ cfg, ownerKey: req.aurexOwnerKey, sessionId });
     await destroyWorkspace(workspacePathFor(cfg, req.aurexOwnerKey, sessionId));
     res.json({ session_id: sessionId, destroyed: true });
   }));

@@ -2,15 +2,24 @@
 // recolher. Roda a cada 10 minutos enquanto o servidor estiver de pé.
 import { listExpiredSandboxSessions, deleteSandboxSession } from '../db.js';
 import { destroyWorkspace, workspacePathFor } from './workspace.js';
+import { sweepExpiredServices, stopServicesForSession } from './services.js';
 
 const SWEEP_INTERVAL_MS = 10 * 60 * 1000;
 
 export function startSandboxSweeper(cfg) {
   async function sweep() {
     try {
+      // Serviços primeiro: um container de pé segura o diretório que estamos
+      // prestes a apagar, e um processo esquecido consome porta e memória.
+      const stoppedServices = await sweepExpiredServices(cfg);
+      if (stoppedServices) {
+        console.log(`[Aurex Sandbox] ${stoppedServices} serviço(s) expirado(s) derrubado(s).`);
+      }
+
       const expired = await listExpiredSandboxSessions();
       for (const session of expired) {
         try {
+          await stopServicesForSession(cfg, session.ownerKey, session.id);
           await destroyWorkspace(workspacePathFor(cfg, session.ownerKey, session.id));
         } catch (err) {
           console.warn('[Aurex Sandbox] Falha ao apagar workspace', session.id, err.message);

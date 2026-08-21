@@ -58,10 +58,11 @@ var AurexSandbox = (function () {
         // ligada, o modelo pode pedir internet por execução — é o que permite
         // npm install / pip install e, com isso, montar um projeto de verdade.
         allowNetwork: !!sandbox.allow_network,
+        allowServices: !!sandbox.allow_services,
         reason: sandbox.reason || (sandbox.enabled ? null : 'Sandbox desativada no servidor.')
       };
     } catch (err) {
-      _probe = { enabled: false, ready: false, allowNetwork: false, reason: 'Servidor Aurex inacessível: ' + err.message };
+      _probe = { enabled: false, ready: false, allowNetwork: false, allowServices: false, reason: 'Servidor Aurex inacessível: ' + err.message };
     }
     _probedAt = Date.now();
     return _probe;
@@ -105,6 +106,49 @@ var AurexSandbox = (function () {
       return { success: false, error: 'Sandbox indisponivel: ' + status.reason, code: 'sandbox_unavailable' };
     }
     return request('POST', '/sessions/' + sessionId() + '/exec', { body: spec });
+  }
+
+  // ---------- Serviços de longa duração ----------
+  //
+  // A porta é publicada na loopback do HOST DO SERVIDOR. Isso só é alcançável
+  // pelo navegador do usuário quando o servidor Aurex roda na mesma máquina —
+  // que é o caso do modo local, mas não de um servidor remoto. Em vez de
+  // devolver uma URL que não abre, dizemos qual é a situação.
+  function browserReachableUrl(hostPort) {
+    var host;
+    try { host = new URL(serverRoot()).hostname; } catch (e) { return null; }
+    var isLocal = host === '127.0.0.1' || host === 'localhost' || host === '::1';
+    return isLocal ? 'http://' + host + ':' + hostPort : null;
+  }
+
+  function decorateService(res) {
+    if (!res || !res.host_port) return res;
+    var reachable = browserReachableUrl(res.host_port);
+    res.browser_url = reachable;
+    if (!reachable) {
+      res.browser_note = 'O servico esta de pe na maquina do servidor Aurex, que nao e esta. ' +
+        'O navegador daqui nao alcanca 127.0.0.1:' + res.host_port + ', entao voce NAO consegue ' +
+        'abrir nem tirar screenshot dele. Use os logs para verificar, ou rode o servidor Aurex localmente.';
+    }
+    return res;
+  }
+
+  async function startService(spec) {
+    var status = await probe();
+    if (!status.ready) {
+      return { success: false, error: 'Sandbox indisponivel: ' + status.reason, code: 'sandbox_unavailable' };
+    }
+    var res = await request('POST', '/sessions/' + sessionId() + '/service', { body: spec });
+    return decorateService(res);
+  }
+
+  async function serviceStatus() {
+    var res = await request('GET', '/sessions/' + sessionId() + '/service');
+    return decorateService(res);
+  }
+
+  async function stopService() {
+    return request('DELETE', '/sessions/' + sessionId() + '/service');
   }
 
   async function listFiles(path, depth) {
@@ -169,7 +213,11 @@ var AurexSandbox = (function () {
     readFile: readFile,
     writeFile: writeFile,
     deleteFile: deleteFile,
-    deliver: deliver
+    deliver: deliver,
+    startService: startService,
+    serviceStatus: serviceStatus,
+    stopService: stopService,
+    browserReachableUrl: browserReachableUrl
   };
 })();
 

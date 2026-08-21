@@ -2278,6 +2278,170 @@ body.temp-chat .temp-chat-pill { display: inline-flex; }
 .integration-status.ok::before { background: var(--accent-green); box-shadow: 0 0 8px rgba(0,230,138,0.5); }
 
 /* --- Evidência de verificação (o usuário audita o que o agente afirma) --- */
+/* ===== LOG VISUAL DE ATIVIDADE =====
+   Um bloco por turno, uma linha por ação. A régua vertical à esquerda amarra
+   as linhas numa sequência só — é o que faz 26 arquivos lerem como uma
+   sequência de trabalho em vez de 26 avisos soltos. */
+.activity-log {
+  margin: 10px 0;
+  border: 1px solid var(--border-soft, var(--border-color));
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+}
+.activity-log.had-failure { border-color: rgba(255, 107, 107, 0.35); }
+
+.activity-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary, #b9bfcd);
+}
+.activity-head:hover { background: rgba(255, 255, 255, 0.03); }
+.activity-head:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: -2px; }
+
+.activity-caret {
+  font-size: 10px;
+  color: var(--text-muted, #6b6f7d);
+  transition: transform 0.18s ease;
+}
+.activity-log.collapsed .activity-caret { transform: rotate(-90deg); }
+.activity-log.collapsed .activity-rows { display: none; }
+
+/* Uma linha só: o resumo é para bater o olho. O texto inteiro fica no
+   title=, e as linhas abaixo têm o detalhe de qualquer forma. */
+.activity-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.activity-log.running .activity-title { color: var(--accent-blue); }
+
+.activity-elapsed {
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-muted, #6b6f7d);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+/* Fora de execução o cronômetro já cumpriu o papel; o resumo basta. */
+.activity-log:not(.running) .activity-elapsed { opacity: 0.55; }
+
+.activity-rows {
+  padding: 2px 12px 10px 12px;
+  /* Régua que liga as linhas. Fica atrás dos ícones, que têm fundo próprio. */
+  background-image: linear-gradient(var(--border-color), var(--border-color));
+  background-size: 1px calc(100% - 18px);
+  background-position: 19px 4px;
+  background-repeat: no-repeat;
+}
+
+.activity-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--text-secondary, #b9bfcd);
+  min-width: 0;
+}
+.activity-row.inspectable { cursor: pointer; }
+.activity-row.inspectable:hover { color: var(--text-primary, #f2f3f7); }
+
+/* O ícone precisa cobrir a régua sem virar um bloco escuro pesado: fundo
+   igual ao do bloco, não uma pastilha própria. */
+.activity-icon {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  font-size: 9.5px;
+  color: var(--text-muted, #6b6f7d);
+  background: var(--bg-primary, #0d0f14);
+}
+.activity-row.running .activity-icon { color: var(--accent-blue); animation: activityPulse 1.1s ease-in-out infinite; }
+.activity-row.ok .activity-icon { color: var(--accent-green); }
+.activity-row.failed .activity-icon { color: var(--accent-red); }
+
+@keyframes activityPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-row.running .activity-icon { animation: none; }
+  .activity-caret { transition: none; }
+}
+
+.activity-label { flex-shrink: 0; }
+
+.activity-target {
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  color: var(--text-muted, #6b6f7d);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 1px 5px;
+  border-radius: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.activity-time {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--text-faint, #4b4f5c);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Observação/erro logo abaixo da linha a que pertencem, recuados sob a régua */
+.activity-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 1px 0 5px 25px;
+  padding: 5px 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  border-radius: 7px;
+  color: var(--accent-green);
+  background: rgba(0, 230, 138, 0.07);
+}
+.activity-note i { margin-top: 2px; font-size: 9px; flex-shrink: 0; }
+.activity-note.warn { color: var(--accent-amber); background: rgba(232, 169, 75, 0.09); }
+.activity-note.error { color: var(--accent-red); background: rgba(255, 107, 107, 0.09); }
+
+.activity-detail {
+  margin: 2px 0 6px 25px;
+  padding: 8px 9px;
+  border-radius: 7px;
+  background: var(--bg-tertiary, #12151c);
+  border: 1px solid var(--border-color);
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--text-muted, #6b6f7d);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
 .tool-evidence {
   display: flex;
   align-items: flex-start;

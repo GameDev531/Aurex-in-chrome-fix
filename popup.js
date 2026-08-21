@@ -635,6 +635,22 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "dev_server",
+      description: "SANDBOX: sobe um processo que NAO termina sozinho (servidor de preview, dev server, watcher) e devolve a URL para voce abrir no navegador. E assim que voce CONFERE VISUALMENTE o que construiu: start, depois dom_action navigate para a browser_url, depois capture_screenshot. Um servico por conversa; subir outro derruba o anterior. Use status para reler os logs e ver se ja respondeu, e stop quando terminar.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", enum: ["start", "status", "stop"] },
+          run: { type: "string", description: "Comando que sobe o servidor, para start. Ex: 'npm run preview -- --host 0.0.0.0 --port 4173' ou 'python3 -m http.server 4173 --directory dist'. O processo PRECISA escutar em 0.0.0.0, nao em localhost — localhost dentro do container nao alcanca o navegador." },
+          port: { type: "number", description: "Porta que o processo escuta DENTRO do container (padrao 4173)" }
+        },
+        required: ["command"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "workflow",
       description: "Fluxos que o USUARIO gravou demonstrando um processo (em 'Ensinar Aurex'). list: mostra os fluxos disponiveis; replay: reexecuta um fluxo passo a passo na aba atual, parando e avisando se algum elemento nao existir mais; delete: apaga. Use replay quando o usuario pedir para repetir algo que ele ja te ensinou.",
       parameters: {
@@ -691,6 +707,7 @@ const TOOL_ACCESS = {
   run_command: "write",         // executa código
   run_code: "write",
   sandbox_files: "write",       // grava e apaga arquivos
+  dev_server: "write",          // sobe processo e publica porta no host
   // dom_action é misto: resolvido por comando (ver toolAccessFor)
   dom_action: "mixed"
 };
@@ -1600,6 +1617,9 @@ function renderWidgetContent(htmlContent, container) {
 
 function appendMessageToUI(role, content, shouldSave) {
   if (shouldSave === undefined) shouldSave = true;
+  // Chegou mensagem: o bloco de atividade daquele turno acabou. Sem fechar
+  // aqui, as ações do turno seguinte cairiam dentro do feed anterior.
+  if (typeof AurexActivity !== 'undefined') AurexActivity.close();
   var container = document.getElementById('messages-container');
   var msgDiv = document.createElement('div');
   msgDiv.className = 'message ' + role;
@@ -1707,11 +1727,194 @@ function appendServiceUnavailableMessage() {
   return msgDiv;
 }
 
+// ========== LOG VISUAL DE ATIVIDADE ==========
+//
+// Antes, cada chamada de ferramenta virava um cartão próprio com um bloco de
+// "detalhes técnicos" aberto por padrão. Numa tarefa que cria 26 arquivos isso
+// vira 26 cartões e o usuário perde de vista o que está acontecendo.
+//
+// Aqui as chamadas de um mesmo turno entram num feed único: uma linha por
+// ação, ícone por TIPO (comando, arquivo escrito, arquivo lido, navegação),
+// alvo em fonte monoespaçada e duração. O resumo no topo conta por tipo, que é
+// o que responde "o que ele fez até agora?" sem ter que ler linha por linha.
+// O detalhe técnico continua ali, mas atrás de um clique.
+
+// Tipo -> ícone. O tipo também alimenta a contagem do resumo, então mudar isto
+// muda as duas coisas de uma vez.
+var ACTIVITY_KINDS = {
+  command:    { icon: 'fa-terminal',         verb: 'executou',  one: 'comando',  many: 'comandos' },
+  write:      { icon: 'fa-file-circle-plus', verb: 'criou',     one: 'arquivo',  many: 'arquivos' },
+  read:       { icon: 'fa-file-lines',       verb: 'leu',       one: 'arquivo',  many: 'arquivos' },
+  browse:     { icon: 'fa-compass',          verb: 'navegou',   one: 'página',   many: 'páginas' },
+  interact:   { icon: 'fa-hand-pointer',     verb: 'interagiu', one: 'vez',      many: 'vezes' },
+  look:       { icon: 'fa-eye',              verb: 'observou',  one: 'vez',      many: 'vezes' },
+  search:     { icon: 'fa-magnifying-glass', verb: 'pesquisou', one: 'vez',      many: 'vezes' },
+  serve:      { icon: 'fa-server',           verb: 'serviu',    one: 'processo', many: 'processos' },
+  deliver:    { icon: 'fa-box-open',         verb: 'entregou',  one: 'arquivo',  many: 'arquivos' },
+  connect:    { icon: 'fa-plug',             verb: 'consultou', one: 'serviço',  many: 'serviços' },
+  other:      { icon: 'fa-gear',             verb: 'fez',       one: 'ação',     many: 'ações' }
+};
+
+// Encurta um caminho preservando o que identifica: o fim.
+function shortTarget(value, max) {
+  var text = String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
+  var limit = max || 52;
+  if (text.length <= limit) return text;
+  return '…' + text.slice(-(limit - 1));
+}
+
+var AurexActivity = (function () {
+  var group = null;
+  var timer = null;
+
+  function formatElapsed(ms) {
+    var seconds = Math.round(ms / 1000);
+    if (seconds < 60) return seconds + 's';
+    return Math.floor(seconds / 60) + 'm ' + (seconds % 60) + 's';
+  }
+
+  function tick() {
+    if (!group) return;
+    var el = group.node.querySelector('.activity-elapsed');
+    if (el) el.textContent = formatElapsed(Date.now() - group.startedAt);
+  }
+
+  function ensureGroup() {
+    if (group) return group;
+    var container = document.getElementById('messages-container');
+    if (!container) return null;
+
+    var node = document.createElement('div');
+    node.className = 'activity-log running';
+
+    var head = document.createElement('button');
+    head.className = 'activity-head';
+    head.type = 'button';
+    head.setAttribute('aria-expanded', 'true');
+
+    var caret = document.createElement('i');
+    caret.className = 'fa-solid fa-chevron-down activity-caret';
+    head.appendChild(caret);
+
+    var title = document.createElement('span');
+    title.className = 'activity-title';
+    title.textContent = t('activity.working');
+    head.appendChild(title);
+
+    var elapsed = document.createElement('span');
+    elapsed.className = 'activity-elapsed';
+    elapsed.textContent = '0s';
+    head.appendChild(elapsed);
+
+    var rows = document.createElement('div');
+    rows.className = 'activity-rows';
+
+    head.addEventListener('click', function () {
+      var collapsed = node.classList.toggle('collapsed');
+      head.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    });
+
+    node.appendChild(head);
+    node.appendChild(rows);
+    container.appendChild(node);
+    container.scrollTop = container.scrollHeight;
+
+    group = { node: node, rows: rows, startedAt: Date.now(), counts: {}, failures: 0 };
+    timer = setInterval(tick, 1000);
+    return group;
+  }
+
+  function addRow(desc) {
+    var current = ensureGroup();
+    if (!current) return null;
+
+    var row = document.createElement('div');
+    row.className = 'activity-row running';
+    row.dataset.kind = desc.kind;
+    row.dataset.startedAt = String(Date.now());
+
+    var icon = document.createElement('i');
+    icon.className = 'fa-solid ' + desc.icon + ' activity-icon';
+    row.appendChild(icon);
+
+    var label = document.createElement('span');
+    label.className = 'activity-label';
+    label.textContent = desc.label;
+    row.appendChild(label);
+
+    if (desc.target) {
+      var target = document.createElement('code');
+      target.className = 'activity-target';
+      target.textContent = shortTarget(desc.target);
+      row.appendChild(target);
+    }
+
+    var time = document.createElement('span');
+    time.className = 'activity-time';
+    row.appendChild(time);
+
+    current.rows.appendChild(row);
+    current.node.scrollTop = current.node.scrollHeight;
+    var container = document.getElementById('messages-container');
+    if (container) container.scrollTop = container.scrollHeight;
+    return row;
+  }
+
+  function countRow(kind) {
+    if (!group) return;
+    group.counts[kind] = (group.counts[kind] || 0) + 1;
+  }
+
+  function markFailure() {
+    if (group) group.failures++;
+  }
+
+  // Frase de resumo: "Criou 26 arquivos · executou 12 comandos · leu 8 arquivos".
+  // Só os três tipos mais frequentes: listar os onze faz a linha estourar e
+  // deixa de responder "o que ele fez?" de relance, que é a razão de existir.
+  function summaryText() {
+    if (!group) return '';
+    var kinds = Object.keys(group.counts).sort(function (a, b) {
+      return group.counts[b] - group.counts[a];
+    });
+    if (!kinds.length) return t('activity.nothing');
+
+    var shown = kinds.slice(0, 3).map(function (kind) {
+      var meta = ACTIVITY_KINDS[kind] || ACTIVITY_KINDS.other;
+      var n = group.counts[kind];
+      return meta.verb + ' ' + n + ' ' + (n === 1 ? meta.one : meta.many);
+    });
+
+    var rest = kinds.slice(3).reduce(function (sum, kind) { return sum + group.counts[kind]; }, 0);
+    var text = shown.join(' · ') + (rest ? ' · +' + rest : '');
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  // Fecha o grupo quando o turno acaba (chega texto do assistente ou o laço
+  // termina). Sem isto o feed do turno seguinte cairia dentro deste.
+  function close() {
+    if (!group) return;
+    if (timer) { clearInterval(timer); timer = null; }
+    tick();
+    group.node.classList.remove('running');
+    if (group.failures) group.node.classList.add('had-failure');
+    var title = group.node.querySelector('.activity-title');
+    if (title) {
+      var summary = summaryText();
+      title.textContent = summary;
+      title.title = summary; // o texto completo, já que a linha corta com reticências
+    }
+    group = null;
+  }
+
+  return { addRow: addRow, countRow: countRow, markFailure: markFailure, close: close };
+})();
+
 function appendToolCallToUI(name, args) {
   const container = document.getElementById('messages-container');
   const msgDiv = document.createElement('div');
   msgDiv.className = `tool-execution`;
-  
+
   let humanMessage = "Executando ação no navegador...";
   if (name === "capture_screenshot") humanMessage = "📸 Capturando a tela da página...";
   else if (name === "dom_action") {
@@ -1752,6 +1955,11 @@ function appendToolCallToUI(name, args) {
   else if (name === "run_code") {
     var langLabel = { python: "Python", node: "Node", bash: "Bash" }[args.language] || args.language;
     humanMessage = (args.network === true ? "🌐 Rodando código " + langLabel + " na sandbox COM internet..." : "🧪 Rodando código " + langLabel + " na sandbox...");
+  }
+  else if (name === "dev_server") {
+    if (args.command === "start") humanMessage = "🚀 Subindo servidor de preview: " + String(args.run || "").substring(0, 50);
+    else if (args.command === "stop") humanMessage = "🛑 Derrubando o servidor de preview";
+    else humanMessage = "📡 Checando o servidor de preview...";
   }
   else if (name === "sandbox_files") {
     if (args.command === "deliver") humanMessage = "📦 Entregando arquivo: " + (args.path || "");
@@ -1797,89 +2005,173 @@ function appendToolCallToUI(name, args) {
     humanMessage = "🧠 Salvando estado da tarefa...";
   }
 
-  msgDiv.dataset.originalMessage = humanMessage;
+  // O ícone tipado substitui o emoji: manter os dois seria ruído dobrado.
+  var cleanLabel = humanMessage.replace(/^[^\p{L}\p{N}]+/u, '').replace(/\.{3}$/, '').trim();
 
-  var header = document.createElement('div');
-  header.style.cssText = 'display: flex; align-items: center; gap: 8px;';
+  var row = AurexActivity.addRow({
+    kind: activityKindFor(name, args),
+    icon: (ACTIVITY_KINDS[activityKindFor(name, args)] || ACTIVITY_KINDS.other).icon,
+    label: cleanLabel,
+    target: activityTargetFor(name, args)
+  });
 
-  var spinner = document.createElement('i');
-  spinner.className = 'fa-solid fa-gear tool-spinner';
-  header.appendChild(spinner);
+  if (!row) return msgDiv; // sem container (aba de configurações aberta, etc.)
 
-  var messageSpan = document.createElement('span');
-  messageSpan.textContent = humanMessage;
-  header.appendChild(messageSpan);
-
-  var details = document.createElement('details');
-  details.style.cssText = 'margin-top: 8px; font-size: 11px; color: #666; cursor: pointer;';
-
-  var summary = document.createElement('summary');
-  summary.style.outline = 'none';
-  summary.textContent = 'Detalhes técnicos';
-  details.appendChild(summary);
-
-  var detailsBody = document.createElement('div');
-  detailsBody.style.cssText = 'margin-top: 4px; padding: 6px; background: #000; border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere;';
-  detailsBody.textContent = name + '(' + safeJson(args) + ')';
-  details.appendChild(detailsBody);
-
-  msgDiv.appendChild(header);
-  msgDiv.appendChild(details);
-  container.appendChild(msgDiv);
-  container.scrollTop = container.scrollHeight;
-  MotionUI.enterTool(msgDiv);
-  return msgDiv;
+  row.dataset.originalMessage = cleanLabel;
+  row.dataset.callSummary = name + '(' + safeJson(args) + ')';
+  return row;
 }
 
-function appendToolResultToUI(msgDiv, result) {
-  const originalMessage = msgDiv.dataset.originalMessage || "Ação";
-  const statusColor = result.success ? '#00ff9d' : '#ff4444';
-  
-  // Atualiza a parte visível da UI preservando o nome da ação original!
-  const headerDiv = msgDiv.querySelector('div');
-  headerDiv.textContent = '';
+// Que TIPO de ação é esta. Alimenta o ícone e a contagem do resumo.
+function activityKindFor(name, args) {
+  args = args || {};
+  // O prefixo é a nossa convenção de nome, então ele basta: exigir que o
+  // cliente MCP esteja carregado só faria a linha perder o ícone certo se o
+  // script tivesse falhado — e é aí que enxergar a origem importa mais.
+  if (String(name).indexOf('mcp__') === 0) return 'connect';
 
-  const statusIconEl = document.createElement('i');
-  statusIconEl.className = result.success ? 'fa-solid fa-check' : 'fa-solid fa-xmark';
-  statusIconEl.style.color = result.success ? '#00ff9d' : '#ff4444';
-  headerDiv.appendChild(statusIconEl);
+  switch (name) {
+    case 'run_command':
+    case 'run_code':
+      return 'command';
+    case 'dev_server':
+      return 'serve';
+    case 'save_markdown_file':
+      return 'write';
+    case 'sandbox_files':
+      if (args.command === 'deliver') return 'deliver';
+      if (args.command === 'write') return 'write';
+      return 'read';
+    case 'capture_screenshot':
+      return 'look';
+    case 'web_search':
+    case 'google_places':
+      return 'search';
+    case 'web_fetch':
+    case 'extract_page':
+      return 'read';
+    case 'api_request':
+      return 'connect';
+    case 'tab_manager':
+      return 'browse';
+    case 'find_element':
+    case 'wait_for':
+      return 'look';
+    case 'workflow':
+      return 'interact';
+    case 'task_memory':
+      return 'other';
+    case 'dom_action':
+      if (args.command === 'navigate' || args.command === 'search_web') return 'browse';
+      if (args.command === 'simulate_click' || args.command === 'simulate_type' ||
+          args.command === 'press_key' || args.command === 'scroll') return 'interact';
+      return 'look';
+    default:
+      return 'other';
+  }
+}
 
-  const resultText = document.createElement('span');
-  resultText.style.color = statusColor;
-  resultText.textContent = originalMessage + ' ' + (result.success ? '(Feito)' : '(Falhou)');
-  headerDiv.appendChild(resultText);
+// O identificador que o usuário reconhece: o arquivo, o comando, o domínio.
+// É o que transforma "Executando na sandbox" em "Executando `npm run build`".
+function activityTargetFor(name, args) {
+  args = args || {};
+  // Domínio, mais a porta quando ela não é a padrão. Sem a porta,
+  // "127.0.0.1:47000" vira só "127.0.0.1" e some justamente o que identifica
+  // qual servidor de preview está sendo aberto.
+  function host(url) {
+    try {
+      var parsed = new URL(url);
+      return parsed.hostname + (parsed.port ? ':' + parsed.port : '');
+    } catch (e) { return url || ''; }
+  }
 
-  // Evidência visível para o usuário: o que foi REALMENTE observado depois da
-  // ação. Sem isto, só o modelo enxerga a verificação e o usuário precisa
-  // confiar na palavra dele.
+  switch (name) {
+    case 'run_command': return args.command;
+    case 'run_code': return args.filename || args.language;
+    case 'dev_server': return args.run || '';
+    case 'save_markdown_file': return args.filename;
+    case 'sandbox_files': return args.path;
+    case 'web_fetch': return host(args.url);
+    case 'api_request': return host(args.url);
+    case 'web_search': return args.query;
+    case 'google_places': return args.query || args.place_id;
+    case 'workflow': return args.name;
+    case 'dom_action':
+      if (args.command === 'navigate') return host(args.value);
+      if (args.command === 'search_web') return args.value;
+      if (args.command === 'simulate_type') return args.value;
+      return '';
+    case 'tab_manager':
+      return args.url ? host(args.url) : '';
+    case 'find_element': return args.description || args.query;
+    case 'wait_for': return args.value;
+    default: return '';
+  }
+}
+
+function appendToolResultToUI(row, result) {
+  if (!row || !row.classList || !row.classList.contains('activity-row')) return;
+
+  row.classList.remove('running');
+  row.classList.add(result.success ? 'ok' : 'failed');
+
+  var startedAt = parseInt(row.dataset.startedAt, 10) || Date.now();
+  var elapsed = Date.now() - startedAt;
+  var timeEl = row.querySelector('.activity-time');
+  // Só mostra duração quando ela diz alguma coisa. "0.1s" em toda linha é ruído.
+  if (timeEl && elapsed >= 1000) {
+    timeEl.textContent = elapsed < 60000
+      ? (elapsed / 1000).toFixed(1) + 's'
+      : Math.floor(elapsed / 60000) + 'm ' + Math.round((elapsed % 60000) / 1000) + 's';
+  }
+
+  AurexActivity.countRow(row.dataset.kind || 'other');
+  if (!result.success) AurexActivity.markFailure();
+
+  // Evidência visível: o que foi REALMENTE observado depois da ação. Sem isto,
+  // só o modelo enxerga a verificação e o usuário precisa confiar na palavra dele.
   var evidence = buildVerificationEvidence(result);
   if (evidence) {
     var evidenceEl = document.createElement('div');
-    evidenceEl.className = 'tool-evidence' + (evidence.warning ? ' warn' : '');
+    evidenceEl.className = 'activity-note' + (evidence.warning ? ' warn' : '');
     var evidenceIcon = document.createElement('i');
-    evidenceIcon.className = evidence.warning ? 'fa-solid fa-triangle-exclamation' : 'fa-solid fa-eye';
+    evidenceIcon.className = 'fa-solid ' + (evidence.warning ? 'fa-triangle-exclamation' : 'fa-eye');
     evidenceEl.appendChild(evidenceIcon);
     var evidenceText = document.createElement('span');
     evidenceText.textContent = evidence.text;
     evidenceEl.appendChild(evidenceText);
-    msgDiv.appendChild(evidenceEl);
+    row.insertAdjacentElement('afterend', evidenceEl);
   }
 
-  // Adiciona o resultado técnico no details
-  const detailsDiv = msgDiv.querySelector('details div');
-  
-  // Truncar para exibição apenas
-  let resultStr = JSON.stringify(result);
-  if (resultStr.length > 500) resultStr = resultStr.substring(0, 500) + "... [truncado para exibição]";
-  
-  detailsDiv.appendChild(document.createElement('br'));
-  detailsDiv.appendChild(document.createElement('br'));
-  const resultLabel = document.createElement('b');
-  resultLabel.textContent = 'Resultado:';
-  detailsDiv.appendChild(resultLabel);
-  detailsDiv.appendChild(document.createElement('br'));
-  detailsDiv.appendChild(document.createTextNode(resultStr));
-  MotionUI.completeTool(msgDiv, result.success);
+  // Falha aparece SEM precisar de clique: é o que o usuário precisa ler.
+  if (!result.success && result.error) {
+    var errorEl = document.createElement('div');
+    errorEl.className = 'activity-note error';
+    var errorIcon = document.createElement('i');
+    errorIcon.className = 'fa-solid fa-circle-exclamation';
+    errorEl.appendChild(errorIcon);
+    var errorText = document.createElement('span');
+    errorText.textContent = String(result.error).slice(0, 400);
+    errorEl.appendChild(errorText);
+    row.insertAdjacentElement('afterend', errorEl);
+  }
+
+  // O detalhe técnico continua acessível, mas atrás de um clique na linha.
+  var resultStr = JSON.stringify(result);
+  if (resultStr.length > 1200) resultStr = resultStr.substring(0, 1200) + '… [truncado para exibição]';
+  row.dataset.resultSummary = resultStr;
+  row.classList.add('inspectable');
+  row.addEventListener('click', function () {
+    var existing = row.nextElementSibling;
+    if (existing && existing.classList.contains('activity-detail')) {
+      existing.remove();
+      return;
+    }
+    var detail = document.createElement('pre');
+    detail.className = 'activity-detail';
+    detail.textContent = (row.dataset.callSummary || '') + '\n\n→ ' + (row.dataset.resultSummary || '');
+    row.insertAdjacentElement('afterend', detail);
+  });
 }
 
 // Traduz a verificação técnica numa frase que o usuário entende, para ele
@@ -3133,6 +3425,8 @@ function executeToolInBrowser(name, args) {
       }).then(function (res) { resolve(shapeSandboxResult(res)); });
     } else if (name === "sandbox_files") {
       executeSandboxFiles(args).then(resolve);
+    } else if (name === "dev_server") {
+      executeDevServer(args).then(resolve);
     } else if (name === "google_places") {
       executeGooglePlaces(args).then(resolve);
     } else if (name === "api_request") {
@@ -3950,6 +4244,11 @@ function getToolingDirective() {
         "Isso significa que voce PODE montar um projeto de verdade: criar o scaffold, instalar dependencias, rodar o build e checar o resultado. Sem rede no resto das execucoes."
       : "- Internet na sandbox: DESLIGADA no servidor. 'npm install' e 'pip install' vao falhar; use apenas o que ja vem na imagem (python3, node 20, python-docx, openpyxl, python-pptx, reportlab, pandas, matplotlib, Pillow). " +
         "Se a tarefa exigir baixar pacotes, diga ao usuario que ele pode ligar AUREX_SANDBOX_ALLOW_NETWORK=true no servidor.");
+    lines.push(sandbox.allowServices
+      ? "- dev_server: ATIVA. Voce pode subir um servidor de preview e ENXERGAR o resultado: start, navigate para a browser_url, capture_screenshot. " +
+        "Use isso para conferir o que construiu em vez de afirmar que ficou bom sem ter visto."
+      : "- dev_server: INDISPONIVEL (o operador nao ligou AUREX_SANDBOX_ALLOW_SERVICES=true). Nao chame esta ferramenta. " +
+        "Voce ainda pode compilar e ler a saida do build; so nao consegue abrir a pagina para ver.");
   } else {
     lines.push("- run_command / run_code / sandbox_files: INDISPONIVEIS" +
       (sandbox && sandbox.reason ? " (" + sandbox.reason + ")" : "") +
@@ -4725,6 +5024,65 @@ function shapeSandboxResult(res) {
     shaped.hint = "Leia o stderr acima para entender a causa, corrija o codigo e execute de novo.";
   }
   return shaped;
+}
+
+// Serviços de longa duração. O valor real disto não é "subir um servidor" —
+// é fechar o ciclo construí → olhei se ficou certo, usando o navegador que a
+// extensão já tem, em vez de meter um Chromium dentro da imagem Docker.
+async function executeDevServer(args) {
+  if (typeof AurexSandbox === 'undefined') {
+    return { success: false, error: "Sandbox indisponivel nesta instalacao." };
+  }
+  var command = args.command || 'status';
+
+  if (command === 'stop') {
+    var stopped = await AurexSandbox.stopService();
+    if (!stopped.success) return stopped;
+    return { success: true, stopped: stopped.stopped !== false, message: "Servico derrubado." };
+  }
+
+  if (command === 'status') {
+    var status = await AurexSandbox.serviceStatus();
+    if (!status.success) return status;
+    if (!status.running) {
+      return Object.assign({ success: true, running: false }, status,
+        { hint: status.exited
+          ? "O processo terminou sozinho — leia os logs acima antes de subir de novo."
+          : "Nenhum servico de pe nesta conversa. Use command='start' com o comando que sobe o servidor." });
+    }
+    return Object.assign({ success: true }, status, nextStepForService(status));
+  }
+
+  var run = String(args.run || '').trim();
+  if (!run) {
+    return {
+      success: false,
+      error: "Informe em 'run' o comando que sobe o servidor.",
+      hint: "Ex: 'npm run preview -- --host 0.0.0.0 --port 4173'. O processo precisa escutar em 0.0.0.0."
+    };
+  }
+
+  var started = await AurexSandbox.startService({ command: run, port: args.port });
+  if (!started.success) return started;
+  if (started.running === false) {
+    return { success: false, error: started.error || "O servico nao subiu.", logs: started.logs };
+  }
+  return Object.assign({ success: true }, started, nextStepForService(started));
+}
+
+// Diz ao modelo, em uma linha, qual é o próximo passo concreto — sem isto ele
+// recebe uma URL e não relaciona com a ferramenta de navegar.
+function nextStepForService(state) {
+  if (!state.responding) {
+    return { next_step: "Ainda nao respondeu. Chame dev_server command='status' em alguns segundos e leia os logs." };
+  }
+  if (!state.browser_url) {
+    return { next_step: state.browser_note || "O navegador daqui nao alcanca este servico; verifique pelos logs." };
+  }
+  return {
+    next_step: "Agora ABRA e CONFIRA: dom_action command='navigate' value='" + state.browser_url +
+      "', depois command='wait' value='2000', depois capture_screenshot para ver como ficou."
+  };
 }
 
 async function executeSandboxFiles(args) {

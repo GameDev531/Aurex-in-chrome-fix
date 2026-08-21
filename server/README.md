@@ -132,6 +132,31 @@ durante todo o resto da conversa, que é quando ele está processando conteúdo
 lido de páginas web. A interface do Aurex marca com 🌐 as execuções que tiveram
 rede, para a diferença ficar visível.
 
+### Servidor de preview (processos de longa duração)
+
+`/exec` roda até terminar. Um `npm run preview` nunca termina — ele só bateria
+no timeout. Por isso existe `/v1/sandbox/sessions/:sid/service`, que sobe o
+container **destacado**, publica uma porta e o mantém de pé até o TTL ou até
+alguém derrubar.
+
+O ganho não é "subir um servidor": é fechar o ciclo **construí → olhei se ficou
+certo**. O agente sobe o preview, navega até a URL numa aba e tira screenshot —
+usando o navegador que a extensão já tem, em vez de embutir um Chromium de meio
+giga na imagem Docker.
+
+`AUREX_SANDBOX_ALLOW_SERVICES` é opt-in **separado** de `ALLOW_NETWORK`, e o
+motivo importa: publicar porta exige rede bridge, então um serviço ganha
+*também* saída de rede, e o listener fica alcançável por qualquer processo na
+loopback do host. Quem liga rede para instalar um pacote não deve ligar, junto
+e sem saber, um processo que fica de pé. Travas: um serviço por conversa,
+teto global (`MAX_SERVICES`), faixa de portas reservada, TTL de 30 min
+aplicado tanto pelo sweeper quanto por um `timeout` dentro do container, e
+publicação sempre presa a `127.0.0.1` — nunca `0.0.0.0`.
+
+A URL só é alcançável pelo navegador do usuário quando o servidor Aurex roda na
+**mesma máquina**. Com servidor remoto, a extensão diz isso em vez de devolver
+um endereço que não abre.
+
 ### Limitações honestas
 
 - **Sem rede no container, por padrão.** O que a imagem não trouxer, não roda —

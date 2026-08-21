@@ -47,6 +47,16 @@ export function readSandboxConfig() {
     allowedUsers: (process.env.AUREX_SANDBOX_ALLOWED_USERS || '')
       .split(',').map((v) => v.trim()).filter(Boolean),
     allowNetwork: envFlag('AUREX_SANDBOX_ALLOW_NETWORK', false),
+    // Serviços de longa duração são opt-in SEPARADO da rede: publicar uma
+    // porta implica bridge (logo, saída de rede) E um listener alcançável na
+    // loopback do host. Quem liga rede para instalar pacote não deve ligar,
+    // junto e sem saber, um processo que fica de pé.
+    allowServices: envFlag('AUREX_SANDBOX_ALLOW_SERVICES', false),
+    servicePortStart: envInt('AUREX_SANDBOX_SERVICE_PORT_START', 47000),
+    servicePortCount: envInt('AUREX_SANDBOX_SERVICE_PORT_COUNT', 40),
+    serviceTtlMs: envInt('AUREX_SANDBOX_SERVICE_TTL_MS', 1800000),
+    serviceBootMs: envInt('AUREX_SANDBOX_SERVICE_BOOT_MS', 25000),
+    maxServices: envInt('AUREX_SANDBOX_MAX_SERVICES', 5),
     seccompProfile: process.env.AUREX_SANDBOX_SECCOMP_PROFILE || '',
     allowPublicBind: envFlag('AUREX_SANDBOX_ALLOW_PUBLIC_BIND', false),
     allowRoot: envFlag('AUREX_SANDBOX_ALLOW_ROOT', false),
