@@ -315,6 +315,16 @@ var SYSTEM_PROMPT = "Voc\u00ea \u00e9 o Aurex, um Web Agent inteligente integrad
 "- Ap\u00f3s clicar/digitar, verifique o campo 'effect'. Se ele disser que nenhuma mudan\u00e7a foi detectada, a a\u00e7\u00e3o provavelmente N\u00c3O funcionou: releia a p\u00e1gina e tente outro alvo, em vez de seguir em frente.\n" +
 "- Ap\u00f3s digitar, verifique 'text_confirmed'. Se vier false, o foco se perdeu e o texto n\u00e3o entrou no campo.\n" +
 "- Se wait_for falhar, a etapa N\u00c3O foi conclu\u00edda. Investigue e diga a verdade ao usu\u00e1rio sobre o que travou \u2014 nunca invente um resultado.\n\n" +
+"# QUANDO UMA FERRAMENTA FALHA (REGRA CR\u00cdTICA)\n" +
+"Falha de UMA ferramenta n\u00e3o \u00e9 falha da TAREFA. Voc\u00ea tem um navegador de verdade do seu lado: quase tudo que uma API recusa, a aba resolve. Antes de dizer que n\u00e3o consegue, suba a escada:\n" +
+"1. web_search falhou (chave, cota, modelo aposentado)? Abra um buscador com dom_action navigate e leia o resultado com extract_page.\n" +
+"2. web_fetch falhou ou voltou vazio? Ele j\u00e1 tenta abrir a p\u00e1gina numa aba sozinho. Se ainda assim falhar, o endere\u00e7o provavelmente est\u00e1 errado \u2014 procure o site pelo nome antes de concluir que ele \u00e9 inacess\u00edvel.\n" +
+"3. A a\u00e7\u00e3o na p\u00e1gina n\u00e3o surtiu efeito? Releia a p\u00e1gina e tente outro alvo. S\u00f3 desista depois de tentar caminhos diferentes, n\u00e3o o mesmo caminho de novo.\n" +
+"4. Leia o campo 'hint' do resultado: quando existe, ele diz exatamente qual \u00e9 o pr\u00f3ximo caminho.\n\n" +
+"# NUNCA ENTREGUE UM SUBSTITUTO NO LUGAR DO PEDIDO (REGRA CR\u00cdTICA)\n" +
+"Se o usu\u00e1rio pediu algo baseado numa fonte espec\u00edfica (um site, um documento, uma p\u00e1gina, dados reais) e voc\u00ea N\u00c3O conseguiu acessar essa fonte, voc\u00ea N\u00c3O pode produzir uma vers\u00e3o inventada e apresent\u00e1-la como se atendesse ao pedido \u2014 nem com aviso, nem como 'aproxima\u00e7\u00e3o', nem como 'identidade visual t\u00edpica'. Um clone de um site que voc\u00ea nunca viu n\u00e3o \u00e9 um clone: \u00e9 outra coisa, entregue com o nome do pedido.\n" +
+"O que fazer no lugar: diga o que voc\u00ea tentou, o que falhou e qual informa\u00e7\u00e3o falta (o link certo, uma captura de tela, o arquivo). PERGUNTE se o usu\u00e1rio quer que voc\u00ea crie algo original a partir do zero \u2014 e s\u00f3 crie depois que ele confirmar, deixando claro que \u00e9 cria\u00e7\u00e3o sua e n\u00e3o c\u00f3pia da fonte.\n" +
+"Isto vale para qualquer entrega: texto, c\u00f3digo, site, planilha, an\u00e1lise. Dado que voc\u00ea n\u00e3o observou, voc\u00ea n\u00e3o afirma.\n\n" +
 "QUANDO FOR PESQUISAR NO GOOGLE:\n" +
 "1. Use dom_action com command='navigate' com value='https://www.google.com' para abrir o Google.\n" +
 "2. Use command='wait' com value='2000' para esperar carregar.\n" +
@@ -1870,6 +1880,12 @@ function appendToolResultToUI(msgDiv, result) {
 // poder auditar o que o agente afirma ter feito.
 function buildVerificationEvidence(result) {
   if (!result || typeof result !== 'object') return null;
+
+  // web_fetch precisou abrir uma aba: o usuário viu isso acontecer na tela,
+  // então a interface diz por que, em vez de deixar parecer efeito colateral.
+  if (result.via === 'navegador') {
+    return { text: 'O download direto não funcionou; li a página abrindo-a numa aba.' };
+  }
 
   // Digitação: o texto entrou mesmo no campo?
   if (result.text_confirmed === false) {
@@ -3867,11 +3883,27 @@ var AUREX_SEARCH_PROVIDERS = [
   { id: 'serper', name: 'Serper.dev (Google)', hint: 'Chave X-API-KEY' }
 ];
 
+// Nomes de modelo caducam. Em vez de deixar a ferramenta morrer com 404 até
+// alguém editar o código, guardamos um padrão atual E aproveitamos que a
+// própria resposta do Google nomeia o substituto (ver healGeminiModel).
+var AUREX_DEFAULT_GEMINI_MODEL = 'gemini-3.6-flash';
+
+// "This model models/X is no longer available. Please update your code to use
+// models/Y" — extrai o Y e o grava, para a próxima chamada já nascer certa.
+function healGeminiModel(errorText) {
+  var match = String(errorText || '').match(/use\s+models\/([A-Za-z0-9._-]+)/);
+  if (!match) return null;
+  var suggested = match[1];
+  if (!suggested || suggested === getSearchConfig().model) return null;
+  localStorage.setItem('aurex_search_model', suggested);
+  return suggested;
+}
+
 function getSearchConfig() {
   return {
     provider: localStorage.getItem('aurex_search_provider') || '',
     key: (localStorage.getItem('aurex_search_key') || '').trim(),
-    model: (localStorage.getItem('aurex_search_model') || '').trim() || 'gemini-2.0-flash'
+    model: (localStorage.getItem('aurex_search_model') || '').trim() || AUREX_DEFAULT_GEMINI_MODEL
   };
 }
 
@@ -3884,12 +3916,15 @@ function getToolingDirective() {
   var search = getSearchConfig();
   var lines = [];
   lines.push(search.provider && search.key
-    ? "- web_search: ATIVA (provedor: " + search.provider + ")"
+    ? "- web_search: ATIVA (provedor: " + search.provider + "). Se ela falhar (cota, chave, modelo aposentado), " +
+      "NAO desista da pesquisa: abra um buscador com dom_action navigate e leia o resultado com extract_page."
     : "- web_search: NAO CONFIGURADA. Nao chame esta ferramenta; se precisar pesquisar, use as Browser Tools (navigate para um buscador) e avise que a busca direta pode ser ativada em Configuracoes > Integracoes.");
   lines.push("- extract_page e capture_screenshot: ATIVAS, mas exigem a permissao do site " +
     "(mesmo banner das Browser Tools). Se vier PERMISSAO PENDENTE, aguarde com wait e repita — nao desista.");
-  lines.push("- web_fetch: ATIVA para a internet publica em https. NAO alcanca rede interna, " +
-    "localhost nem IP privado; para isso peca ao usuario para abrir a pagina numa aba e use extract_page. " +
+  lines.push("- web_fetch: ATIVA para a internet publica em https. Se o download direto falhar ou a pagina " +
+    "for renderizada por JavaScript, ele ABRE A PAGINA NUMA ABA sozinho e le de la (o resultado vem com " +
+    "via='navegador') — entao 'nao consegui baixar' quase nunca significa 'site inacessivel'. " +
+    "NAO alcanca rede interna, localhost nem IP privado. " +
     "Colocar muito conteudo na URL conta como ENVIO de dados e pede autorizacao do usuario: " +
     "use a URL para enderecar a pagina, nao para carregar texto.");
   lines.push(getPlacesKey()
@@ -3968,20 +4003,46 @@ async function executeWebSearch(args) {
     }
 
     // Gemini com grounding na Busca do Google
-    var geminiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/' +
-      encodeURIComponent(cfg.model) + ':generateContent?key=' + encodeURIComponent(cfg.key);
-    var gemRes = await fetch(geminiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: query }] }],
-        tools: [{ google_search: {} }]
-      })
-    });
+    function callGemini(modelName) {
+      var geminiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/' +
+        encodeURIComponent(modelName) + ':generateContent?key=' + encodeURIComponent(cfg.key);
+      return fetch(geminiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: query }] }],
+          tools: [{ google_search: {} }]
+        })
+      });
+    }
+
+    var usedModel = cfg.model;
+    var gemRes = await callGemini(usedModel);
+    var healedTo = null;
+
     if (!gemRes.ok) {
       var errText = await gemRes.text();
-      return { success: false, error: scrubSecrets("Gemini respondeu " + gemRes.status + ": " + errText.substring(0, 300)) };
+      // Modelo aposentado: o Google diz na resposta qual usar. Trocamos e
+      // repetimos uma vez, em vez de devolver 404 e o agente desistir.
+      if (gemRes.status === 404) {
+        healedTo = healGeminiModel(errText);
+        if (healedTo) {
+          usedModel = healedTo;
+          gemRes = await callGemini(usedModel);
+        }
+      }
+      if (!gemRes.ok) {
+        var finalText = healedTo ? await gemRes.text() : errText;
+        return {
+          success: false,
+          error: scrubSecrets("Gemini respondeu " + gemRes.status + ": " + finalText.substring(0, 300)),
+          hint: gemRes.status === 404
+            ? "O modelo configurado nao existe mais. Ajuste em Configuracoes > Integracoes > Busca na web, ou pesquise abrindo um buscador numa aba com dom_action navigate."
+            : "A busca por API falhou. Voce ainda pode pesquisar abrindo um buscador numa aba com dom_action navigate e lendo o resultado com extract_page."
+        };
+      }
     }
+
     var gemData = await gemRes.json();
     var candidate = (gemData.candidates || [])[0] || {};
     var answer = ((candidate.content && candidate.content.parts) || [])
@@ -3990,9 +4051,18 @@ async function executeWebSearch(args) {
     var sources = chunks.map(function (c) {
       return c.web ? { title: c.web.title, url: c.web.uri } : null;
     }).filter(Boolean).slice(0, count);
-    return { success: true, provider: 'gemini', query: query, answer: answer, results: sources };
+    return {
+      success: true, provider: 'gemini', query: query, answer: answer, results: sources,
+      model: usedModel,
+      note: healedTo ? 'O modelo anterior foi aposentado; o Aurex passou a usar ' + healedTo + '.' : undefined
+    };
   } catch (err) {
-    return { success: false, error: scrubSecrets("Falha na busca: " + err.message) };
+    return {
+      success: false,
+      error: scrubSecrets("Falha na busca: " + err.message),
+      hint: "A busca por API falhou. Nao desista da tarefa: pesquise abrindo um buscador numa aba com " +
+        "dom_action navigate e leia o resultado com extract_page."
+    };
   }
 }
 
@@ -4130,6 +4200,71 @@ function authorizeFetchOrigin(origin) {
   });
 }
 
+// Abre a URL numa aba de segundo plano, lê pelo content script e fecha a aba.
+//
+// Existe porque um fetch cru não é um navegador: vai sem cookies, sem UA de
+// browser e sem executar JavaScript. Proteção anti-bot, Cloudflare e site que
+// só renderiza no cliente devolvem "Failed to fetch" ou uma casca vazia — e o
+// agente concluía que a página era inacessível, sendo que ele TEM um
+// navegador do lado dele. A leitura em si continua passando pelo gate de
+// permissão normal (o banner aparece para a origem nova).
+function fetchViaBrowser(url, timeoutMs) {
+  var limit = timeoutMs || 20000;
+
+  return new Promise(function (resolve) {
+    chrome.tabs.create({ url: url, active: false }, function (tab) {
+      if (chrome.runtime.lastError || !tab) {
+        resolve({ success: false, error: "Nao consegui abrir a aba: " + ((chrome.runtime.lastError || {}).message || "desconhecido") });
+        return;
+      }
+
+      var settled = false;
+      var deadline = Date.now() + limit;
+
+      function finish(result) {
+        if (settled) return;
+        settled = true;
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        // A aba é nossa: fechamos sempre, inclusive em erro.
+        chrome.tabs.remove(tab.id, function () { void chrome.runtime.lastError; });
+        resolve(result);
+      }
+
+      function readAndFinish() {
+        // Um instante depois do 'complete' para o JS inicial da página rodar
+        setTimeout(function () {
+          if (settled) return;
+          chrome.tabs.get(tab.id, function (live) {
+            if (chrome.runtime.lastError || !live) {
+              finish({ success: false, error: "A aba fechou antes da leitura." });
+              return;
+            }
+            sendToContentScript(tab.id, { command: "read_dom" }).then(function (res) {
+              if (res && res.success) {
+                finish({ success: true, url: live.url, title: live.title, data: res.data });
+              } else {
+                finish(res || { success: false, error: "Nao consegui ler a pagina na aba." });
+              }
+            });
+          });
+        }, 900);
+      }
+
+      function onUpdated(updatedId, info) {
+        if (updatedId !== tab.id || settled) return;
+        if (info.status === 'complete') readAndFinish();
+      }
+
+      chrome.tabs.onUpdated.addListener(onUpdated);
+
+      // Rede de segurança: se o 'complete' nunca vier, lemos o que houver.
+      setTimeout(function () {
+        if (!settled && Date.now() >= deadline - 50) readAndFinish();
+      }, limit);
+    });
+  });
+}
+
 async function executeWebFetch(args) {
   var rawUrl = String(args.url || '').trim();
   if (!rawUrl) return { success: false, error: "URL vazia." };
@@ -4175,7 +4310,9 @@ async function executeWebFetch(args) {
 
   try {
     var response = await fetch(rawUrl, { headers: { 'Accept': 'text/html,application/xhtml+xml' } });
-    if (!response.ok) return { success: false, error: "A pagina respondeu " + response.status + "." };
+    if (!response.ok) {
+      return await webFetchFallback(rawUrl, "A pagina respondeu " + response.status + ".");
+    }
     var contentType = response.headers.get('content-type') || '';
     var body = await response.text();
 
@@ -4183,6 +4320,16 @@ async function executeWebFetch(args) {
       return { success: true, url: rawUrl, contentType: 'json', data: body.substring(0, 20000) };
     }
     var parsed = htmlToReadableText(body, rawUrl);
+
+    // Site que só monta a página no cliente devolve 200 com uma casca vazia.
+    // Sem isto o agente recebia "sucesso" com nada dentro e seguia adiante
+    // achando que tinha lido o site.
+    if (parsed.text.trim().length < 200) {
+      var viaBrowser = await webFetchFallback(rawUrl,
+        "A resposta veio praticamente vazia (" + parsed.text.trim().length + " caracteres): a pagina provavelmente e renderizada por JavaScript.");
+      if (viaBrowser.success) return viaBrowser;
+    }
+
     var truncated = parsed.text.length > 18000;
     return {
       success: true,
@@ -4193,8 +4340,55 @@ async function executeWebFetch(args) {
       links: parsed.links
     };
   } catch (err) {
-    return { success: false, error: "Nao consegui baixar a pagina: " + err.message };
+    return await webFetchFallback(rawUrl, "Nao consegui baixar a pagina: " + err.message);
   }
+}
+
+// Quando o download direto não serve, tenta pelo navegador de verdade.
+// Em modo Plano não abrimos aba (é efeito colateral): devolvemos o caminho
+// exato para o agente seguir depois que o plano for aprovado.
+async function webFetchFallback(rawUrl, reason) {
+  if (isWriteBlocked()) {
+    return {
+      success: false,
+      error: reason,
+      hint: "MODO PLANO: nao posso abrir abas agora. Inclua no plano o passo de abrir " + rawUrl +
+        " com dom_action navigate e ler com extract_page. NAO invente o conteudo da pagina."
+    };
+  }
+
+  var viaBrowser = await fetchViaBrowser(rawUrl);
+  if (viaBrowser.success) {
+    return {
+      success: true,
+      url: viaBrowser.url || rawUrl,
+      title: viaBrowser.title,
+      data: viaBrowser.data,
+      via: "navegador",
+      note: "O download direto falhou (" + reason + "), entao a pagina foi aberta numa aba e lida de la."
+    };
+  }
+
+  // Permissão pendente/recusada não é "site inacessível": dizer que o
+  // endereço está errado aqui mandaria o agente para o caminho errado.
+  var permissionIssue = /PERMISS[ÃA]O (RECUSADA|PENDENTE)|AGUARDANDO PERMISS[ÃA]O/i.test(viaBrowser.error || "");
+  if (permissionIssue) {
+    return {
+      success: false,
+      error: viaBrowser.error,
+      hint: "O download direto falhou (" + reason + ") e a leitura pela aba depende da sua permissao. " +
+        "Aguarde com wait (3000 a 5000 ms) e repita esta mesma chamada — o endereco esta certo."
+    };
+  }
+
+  return {
+    success: false,
+    error: reason,
+    browser_attempt: viaBrowser.error,
+    hint: "Tentei baixar direto e tambem abrir numa aba; os dois falharam. O dominio provavelmente esta " +
+      "errado — procure o site pelo NOME com web_search ou num buscador antes de concluir que ele nao existe. " +
+      "NAO invente o conteudo do site e NAO entregue um substituto generico como se fosse o pedido."
+  };
 }
 
 // ========== EXTERNAL TOOL: GOOGLE PLACES API (NEW) ==========
