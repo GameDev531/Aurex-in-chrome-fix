@@ -315,7 +315,8 @@ var SYSTEM_PROMPT = "Voc\u00ea \u00e9 o Aurex, um Web Agent inteligente integrad
 "NUNCA declare uma tarefa conclu\u00edda apenas porque a ferramenta n\u00e3o retornou erro. Uma a\u00e7\u00e3o s\u00f3 est\u00e1 conclu\u00edda quando voc\u00ea OBSERVOU evid\u00eancia do resultado esperado.\n" +
 "- Ap\u00f3s clicar/digitar, verifique o campo 'effect'. Se ele disser que nenhuma mudan\u00e7a foi detectada, a a\u00e7\u00e3o provavelmente N\u00c3O funcionou: releia a p\u00e1gina e tente outro alvo, em vez de seguir em frente.\n" +
 "- Ap\u00f3s digitar, verifique 'text_confirmed'. Se vier false, o foco se perdeu e o texto n\u00e3o entrou no campo.\n" +
-"- Se wait_for falhar, a etapa N\u00c3O foi conclu\u00edda. Investigue e diga a verdade ao usu\u00e1rio sobre o que travou \u2014 nunca invente um resultado.\n\n" +
+"- Se wait_for falhar, a etapa N\u00c3O foi conclu\u00edda. Investigue e diga a verdade ao usu\u00e1rio sobre o que travou \u2014 nunca invente um resultado.\n" +
+"- NUNCA diga \"testei\", \"verifiquei\" ou \"confirmei\" sem ter CHAMADO a ferramenta correspondente nesta mensagem. Salvar estado e esperar n\u00e3o \u00e9 testar. Se voc\u00ea est\u00e1 repetindo o que j\u00e1 sabia, diga que est\u00e1 repetindo o que j\u00e1 sabia \u2014 n\u00e3o apresente convic\u00e7\u00e3o antiga como resultado novo.\n\n" +
 "# QUANDO UMA FERRAMENTA FALHA (REGRA CR\u00cdTICA)\n" +
 "Falha de UMA ferramenta n\u00e3o \u00e9 falha da TAREFA. Voc\u00ea tem um navegador de verdade do seu lado: quase tudo que uma API recusa, a aba resolve. Antes de dizer que n\u00e3o consegue, suba a escada:\n" +
 "1. web_search falhou (chave, cota, modelo aposentado)? Abra um buscador com dom_action navigate e leia o resultado com extract_page.\n" +
@@ -870,7 +871,14 @@ document.addEventListener('DOMContentLoaded', () => {
   setupTempChat();
   setupOnboarding();
   // Aquece a sonda da sandbox para a primeira mensagem já saber o estado real
-  if (typeof AurexSandbox !== 'undefined') AurexSandbox.probe();
+  if (typeof AurexSandbox !== 'undefined') {
+    AurexSandbox.probe();
+    // E resonda ao voltar para o painel: o caso comum é subir o servidor
+    // DEPOIS de já ter aberto o Aurex.
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) AurexSandbox.probe(true);
+    });
+  }
   // Esconde o menu de atalhos ao clicar fora ou perder o foco
   document.addEventListener('click', function (e) {
     var menu = document.getElementById('slash-menu');
@@ -2574,6 +2582,19 @@ async function processLLMLoop(iterationCount = 0) {
         extraDirectives += "\n\n# USUARIO\nO nome do usuário é " + _aurexUserName + ". Chame-o pelo nome de forma natural quando fizer sentido (saudações, conclusões de tarefa), sem exagerar. O Aurex in Chrome está em versão beta: se o usuário perguntar sobre estabilidade, explique com transparência que podem ocorrer erros e que ações em sites sensíveis devem ser revisadas.";
       }
 
+      // Sonda a sandbox ANTES de montar a diretiva.
+      //
+      // Antes, probe() rodava uma única vez ao abrir o painel. Se o servidor
+      // ainda não estivesse de pé naquele instante, a extensão ficava
+      // convencida de que a sandbox não existia — e a diretiva mandava o
+      // modelo NÃO chamar as ferramentas. Como probe() só era refeita dentro
+      // de exec(), e exec() nunca acontecia, o estado errado se sustentava
+      // sozinho até o painel ser reaberto. Um usuário que subisse o servidor
+      // depois de abrir o Aurex nunca mais via a sandbox.
+      if (typeof AurexSandbox !== 'undefined') {
+        try { await AurexSandbox.probe(); } catch (e) { /* a diretiva lida com a ausência */ }
+      }
+
       // Estado real das ferramentas (evita o modelo chamar o que não existe)
       extraDirectives += getToolingDirective();
 
@@ -3688,6 +3709,53 @@ function setupSettingsPanel() {
       setTimeout(function () { saveServer.textContent = t('settings.server.save'); }, 1200);
       // Se o usuário ativou o servidor local, o gate de login deixa de bloquear
       if (typeof window._aurexRefreshOnboarding === 'function') window._aurexRefreshOnboarding();
+      // O endereço mudou: a sonda em cache virou mentira.
+      if (typeof AurexSandbox !== 'undefined') AurexSandbox.probe(true);
+    });
+  }
+
+  // Diagnóstico de conexão. Existe porque "sandbox indisponível" no chat não
+  // diz PARA ONDE o Aurex está olhando — e o caso mais comum é a extensão
+  // continuar apontando para o endpoint padrão enquanto o servidor do usuário
+  // roda em localhost. Nenhum .env na máquina dele muda isso.
+  var testServer = document.getElementById('test-server');
+  if (testServer) {
+    testServer.addEventListener('click', async function () {
+      var out = document.getElementById('server-diagnostic');
+      if (!out) return;
+      out.className = 'server-diagnostic checking';
+      out.textContent = t('settings.server.testing');
+
+      var base = getAurexApiBase().replace(/\/v\d+$/, '');
+      var lines = [];
+      lines.push(t('settings.server.endpoint') + ': ' + base);
+
+      var probe = null;
+      if (typeof AurexSandbox !== 'undefined') {
+        probe = await AurexSandbox.probe(true);
+      }
+
+      if (!probe || (!probe.enabled && !probe.ready && probe.endpoint)) {
+        out.className = 'server-diagnostic bad';
+        lines.push('✕ ' + (probe ? probe.reason : t('settings.server.unreachable')));
+        lines.push(t('settings.server.hintUnreachable'));
+      } else if (!probe.enabled) {
+        out.className = 'server-diagnostic warn';
+        lines.push('✓ ' + t('settings.server.reachable'));
+        lines.push('✕ ' + t('settings.server.sandboxOff'));
+      } else if (!probe.ready) {
+        out.className = 'server-diagnostic warn';
+        lines.push('✓ ' + t('settings.server.reachable'));
+        lines.push('✕ ' + (probe.reason || t('settings.server.sandboxNotReady')));
+      } else {
+        out.className = 'server-diagnostic good';
+        lines.push('✓ ' + t('settings.server.reachable'));
+        lines.push('✓ ' + t('settings.server.sandboxReady'));
+        lines.push((probe.allowNetwork ? '✓ ' : '✕ ') + t('settings.server.network'));
+        lines.push((probe.allowServices ? '✓ ' : '✕ ') + t('settings.server.services'));
+      }
+
+      out.textContent = lines.join('\n');
     });
   }
 
@@ -4250,9 +4318,19 @@ function getToolingDirective() {
       : "- dev_server: INDISPONIVEL (o operador nao ligou AUREX_SANDBOX_ALLOW_SERVICES=true). Nao chame esta ferramenta. " +
         "Voce ainda pode compilar e ler a saida do build; so nao consegue abrir a pagina para ver.");
   } else {
-    lines.push("- run_command / run_code / sandbox_files: INDISPONIVEIS" +
-      (sandbox && sandbox.reason ? " (" + sandbox.reason + ")" : "") +
-      ". NAO chame estas ferramentas; entregue o conteudo com save_markdown_file.");
+    lines.push("- run_command / run_code / sandbox_files / dev_server: INDISPONIVEIS" +
+      (sandbox && sandbox.reason ? " — " + sandbox.reason : "") +
+      ". Nao use estas ferramentas para a tarefa; entregue o conteudo com save_markdown_file.");
+    // Sem esta linha, "não chame" virava profecia autorrealizável: o usuário
+    // pedia para testar, o modelo se recusava a tentar e depois relatava o
+    // palpite em cache como se fosse resultado de teste.
+    lines.push("  EXCECAO: se o usuario pedir explicitamente para TESTAR ou TENTAR DE NOVO, chame run_command " +
+      "com um comando trivial (ex: 'echo ok') UMA vez e relate o que voltou de verdade. " +
+      "Nunca diga 'testei' sem ter chamado a ferramenta nesta mensagem." +
+      (sandbox && sandbox.endpoint
+        ? " Se falhar de novo, diga ao usuario que o Aurex esta apontando para " + sandbox.endpoint +
+          " e que o endereco do servidor se ajusta em Configuracoes > Geral > Servidor."
+        : ""));
   }
 
   var mcpTools = mcpToolDefinitions();

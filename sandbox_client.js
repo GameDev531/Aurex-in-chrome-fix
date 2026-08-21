@@ -9,6 +9,7 @@ var AurexSandbox = (function () {
   var _probe = null;          // último resultado de disponibilidade
   var _probedAt = 0;
   var PROBE_TTL_MS = 60000;
+  var FAILED_PROBE_TTL_MS = 3000;
 
   function apiBase() {
     return (typeof getAurexApiBase === 'function')
@@ -45,7 +46,12 @@ var AurexSandbox = (function () {
   // Sonda o /health (sem autenticação) para saber se pode oferecer as
   // ferramentas ao modelo.
   async function probe(force) {
-    if (!force && _probe && (Date.now() - _probedAt) < PROBE_TTL_MS) return _probe;
+    // Resultado NEGATIVO vale pouco tempo. Cachear "indisponível" pelos mesmos
+    // 60s de um "disponível" é o que fazia o usuário subir o servidor e o
+    // Aurex continuar jurando que não existia — um /health que falha é
+    // barato de repetir; um que funciona é que vale a pena guardar.
+    var ttl = (_probe && _probe.ready) ? PROBE_TTL_MS : FAILED_PROBE_TTL_MS;
+    if (!force && _probe && (Date.now() - _probedAt) < ttl) return _probe;
     try {
       var res = await fetch(serverRoot() + '/health', { method: 'GET' });
       if (!res.ok) throw new Error('health ' + res.status);
@@ -62,7 +68,18 @@ var AurexSandbox = (function () {
         reason: sandbox.reason || (sandbox.enabled ? null : 'Sandbox desativada no servidor.')
       };
     } catch (err) {
-      _probe = { enabled: false, ready: false, allowNetwork: false, allowServices: false, reason: 'Servidor Aurex inacessível: ' + err.message };
+      // O endereço PRECISA aparecer aqui. "Servidor inacessível" sozinho
+      // esconde a causa mais comum: a extensão continua apontando para o
+      // endpoint padrão em vez do servidor local que o usuário subiu, e
+      // nenhum .env na máquina dele muda isso.
+      _probe = {
+        enabled: false,
+        ready: false,
+        allowNetwork: false,
+        allowServices: false,
+        reason: 'não consegui falar com ' + serverRoot() + ' (' + err.message + ')',
+        endpoint: serverRoot()
+      };
     }
     _probedAt = Date.now();
     return _probe;

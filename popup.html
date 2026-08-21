@@ -230,7 +230,11 @@
               </label>
               <div class="setting-toggle-label" style="margin-top:12px;" data-i18n="settings.server.key">Chave da API (opcional)</div>
               <input type="text" id="api-key-input" class="setting-select" style="margin-top:6px;" data-i18n-ph="settings.server.keyPh" placeholder="Cole sua chave se o servidor exigir">
-              <button class="action-btn primary" id="save-server" style="margin-top:12px;" data-i18n="settings.server.save">Salvar servidor</button>
+              <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+                <button class="action-btn primary" id="save-server" data-i18n="settings.server.save">Salvar servidor</button>
+                <button class="action-btn" id="test-server"><i class="fa-solid fa-stethoscope"></i> <span data-i18n="settings.server.test">Testar conexão</span></button>
+              </div>
+              <div id="server-diagnostic" class="server-diagnostic"></div>
             </div>
 
             <div class="setting-block">

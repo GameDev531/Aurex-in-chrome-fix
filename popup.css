@@ -2442,6 +2442,26 @@ body.temp-chat .temp-chat-pill { display: inline-flex; }
   overflow-y: auto;
 }
 
+/* Diagnóstico de conexão do servidor */
+.server-diagnostic {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary, #12151c);
+  color: var(--text-secondary, #b9bfcd);
+}
+.server-diagnostic:empty { display: none; }
+.server-diagnostic.checking { color: var(--text-muted, #6b6f7d); }
+.server-diagnostic.good { border-color: rgba(0, 230, 138, 0.3); color: var(--accent-green); }
+.server-diagnostic.warn { border-color: rgba(232, 169, 75, 0.3); color: var(--accent-amber); }
+.server-diagnostic.bad  { border-color: rgba(255, 107, 107, 0.3); color: var(--accent-red); }
+
 .tool-evidence {
   display: flex;
   align-items: flex-start;
