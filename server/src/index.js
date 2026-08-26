@@ -16,18 +16,27 @@ import express from 'express';
 import cors from 'cors';
 import { initDb, usingPostgres } from './db.js';
 import { registerAuthRoutes } from './auth.js';
-import { authenticate, validApiKeys } from './middleware.js';
+import { authenticate, validApiKeys, corsOptions, ownerKeyFor } from './middleware.js';
 import { readSandboxConfig, assertCoreBootConfig, assertSandboxBootConfig, dockerPreflight, SandboxBootError } from './sandbox/config.js';
 import { registerSandboxRoutes } from './sandbox/routes.js';
 import { sweepOrphanContainers } from './sandbox/docker.js';
 import { startSandboxSweeper } from './sandbox/sweeper.js';
+import { checkRateLimit } from './sandbox/limits.js';
+import { buildChatPayload } from './chat.js';
 
 const app = express();
-// CORS restrito quando configurado. Com '*', qualquer página que o usuário
-// visitasse podia ler respostas desta API no localhost dele.
-const allowedOrigins = (process.env.AUREX_ALLOWED_ORIGINS || '')
-  .split(',').map((v) => v.trim()).filter(Boolean);
-app.use(cors(allowedOrigins.length ? { origin: allowedOrigins, credentials: false } : {}));
+app.use(cors(corsOptions()));
+// Sem cache de resposta por proxy/navegador e sem sniffing de tipo: as
+// respostas carregam conteúdo do usuário e nunca devem ser reaproveitadas
+// entre chamadores nem reinterpretadas como outro tipo.
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  // A API não devolve HTML para ser exibido; enquadrar não faz sentido.
+  res.setHeader('X-Frame-Options', 'DENY');
+  next();
+});
 
 // O parser JSON de 25 MB era global, então o limite menor declarado no router
 // da sandbox nunca valia (o body-parser marca req._body e o segundo parser
@@ -39,6 +48,11 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 // modelo temporario pois por enquanto o modelo proprio esta em desenvolvimento.
 const DEEPSEEK_URL = 'https://api.deepseek.com/chat/completions';
 const DEEPSEEK_MODEL = 'deepseek-chat';
+
+// Teto de abuso do proxy do modelo. Um agente em laço faz muitas chamadas
+// legítimas, então o limite é generoso — o que ele impede é o descontrolado.
+const CHAT_RATE_PER_MIN = parseInt(process.env.AUREX_CHAT_RATE_PER_MIN || '60', 10);
+const CHAT_MAX_TOKENS_CAP = parseInt(process.env.AUREX_CHAT_MAX_TOKENS || '16384', 10);
 
 // authenticate e validApiKeys agora vivem em middleware.js, para a sandbox
 // poder reusar exatamente a mesma autenticação.
@@ -81,13 +95,20 @@ app.post('/v1/chat/completions', express.json({ limit: '25mb' }), authenticate, 
     });
   }
 
-  const body = req.body || {};
-  const payload = {
-    ...body,
-    // A extensão envia model: "AurexAI"; mapeamos para o modelo real do proxy
-    model: !body.model || body.model === 'AurexAI' ? DEEPSEEK_MODEL : body.model,
-    stream: false
-  };
+  // Limite por chamador ANTES de gastar. Esta rota custa dinheiro de verdade
+  // e não tinha limite nenhum no servidor — o teto que existia era no cliente,
+  // e um teto no cliente não é um controle, é uma sugestão.
+  try {
+    checkRateLimit('chat:' + (ownerKeyFor(req.aurexUser) || 'anon'), CHAT_RATE_PER_MIN);
+  } catch (err) {
+    return res.status(429).json({ error: { code: 'rate_limited', message: err.message } });
+  }
+
+  // Allowlist em vez de repassar o corpo inteiro (ver chat.js).
+  const payload = buildChatPayload(req.body, {
+    defaultModel: DEEPSEEK_MODEL,
+    maxTokensCap: CHAT_MAX_TOKENS_CAP
+  });
 
   try {
     const upstream = await fetch(DEEPSEEK_URL, {
