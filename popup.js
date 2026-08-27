@@ -3748,6 +3748,98 @@ function setupSettingsPanel() {
   // diz PARA ONDE o Aurex está olhando — e o caso mais comum é a extensão
   // continuar apontando para o endpoint padrão enquanto o servidor do usuário
   // roda em localhost. Nenhum .env na máquina dele muda isso.
+  // Separa o veredito (conectou?) do inventário (o que está ligado?).
+  // Exportada como função própria para poder ser testada sem clicar em nada.
+  function buildServerDiagnostic(state) {
+    var probe = state.probe;
+    var endpoint = state.endpoint;
+
+    if (!probe || probe.endpoint) {
+      // Só o ramo de exceção da sonda preenche `endpoint`: aí sim não falamos
+      // com o servidor.
+      return {
+        status: 'bad',
+        headline: t('settings.server.unreachable'),
+        detail: probe ? probe.reason : null,
+        endpoint: endpoint,
+        hint: t('settings.server.hintUnreachable'),
+        capabilities: []
+      };
+    }
+
+    // Chegou resposta: a conexão está boa, ponto. O que vem abaixo é o
+    // inventário do que o operador ligou — nenhum item aqui é falha.
+    var caps = [
+      { label: t('settings.server.capSandbox'), on: !!probe.ready,
+        off: probe.enabled ? (probe.reason || t('settings.server.sandboxNotReady')) : t('settings.server.sandboxOff') },
+      { label: t('settings.server.network'), on: !!probe.allowNetwork, off: t('settings.server.networkOff') },
+      { label: t('settings.server.services'), on: !!probe.allowServices, off: t('settings.server.servicesOff') }
+    ];
+
+    // Sandbox LIGADA mas não pronta é a única coisa aqui que o operador
+    // provavelmente não quis — isso sim merece atenção.
+    var quebrado = probe.enabled && !probe.ready;
+
+    return {
+      status: quebrado ? 'warn' : 'good',
+      headline: t('settings.server.reachable'),
+      endpoint: endpoint,
+      detail: null,
+      hint: quebrado ? (probe.reason || t('settings.server.sandboxNotReady')) : null,
+      capabilities: caps
+    };
+  }
+
+  function renderServerDiagnostic(out, state) {
+    var d = buildServerDiagnostic(state);
+    out.className = 'server-diagnostic ' + d.status;
+    out.textContent = '';
+
+    var head = document.createElement('div');
+    head.className = 'diag-headline';
+    head.textContent = (d.status === 'bad' ? '✕ ' : '✓ ') + d.headline;
+    out.appendChild(head);
+
+    var addr = document.createElement('div');
+    addr.className = 'diag-endpoint';
+    addr.textContent = t('settings.server.endpoint') + ': ' + d.endpoint;
+    out.appendChild(addr);
+
+    if (d.detail) {
+      var det = document.createElement('div');
+      det.className = 'diag-detail';
+      det.textContent = d.detail;
+      out.appendChild(det);
+    }
+
+    if (d.capabilities.length) {
+      var list = document.createElement('div');
+      list.className = 'diag-caps';
+      d.capabilities.forEach(function (cap) {
+        var row = document.createElement('div');
+        row.className = 'diag-cap' + (cap.on ? ' on' : '');
+        var dot = document.createElement('span');
+        dot.className = 'diag-dot';
+        row.appendChild(dot);
+        var text = document.createElement('span');
+        // Desligado não é ✕: é "desligado". A diferença é o que faz o painel
+        // parar de gritar erro quando está tudo certo.
+        text.textContent = cap.label + ' — ' + (cap.on ? t('settings.server.capOn') : cap.off);
+        row.appendChild(text);
+        list.appendChild(row);
+      });
+      out.appendChild(list);
+    }
+
+    if (d.hint) {
+      var hint = document.createElement('div');
+      hint.className = 'diag-hint';
+      hint.textContent = d.hint;
+      out.appendChild(hint);
+    }
+  }
+  window._aurexBuildServerDiagnostic = buildServerDiagnostic;
+
   var testServer = document.getElementById('test-server');
   if (testServer) {
     testServer.addEventListener('click', async function () {
@@ -3756,36 +3848,22 @@ function setupSettingsPanel() {
       out.className = 'server-diagnostic checking';
       out.textContent = t('settings.server.testing');
 
-      var base = getAurexApiBase().replace(/\/v\d+$/, '');
-      var lines = [];
-      lines.push(t('settings.server.endpoint') + ': ' + base);
-
       var probe = null;
       if (typeof AurexSandbox !== 'undefined') {
         probe = await AurexSandbox.probe(true);
       }
 
-      if (!probe || (!probe.enabled && !probe.ready && probe.endpoint)) {
-        out.className = 'server-diagnostic bad';
-        lines.push('✕ ' + (probe ? probe.reason : t('settings.server.unreachable')));
-        lines.push(t('settings.server.hintUnreachable'));
-      } else if (!probe.enabled) {
-        out.className = 'server-diagnostic warn';
-        lines.push('✓ ' + t('settings.server.reachable'));
-        lines.push('✕ ' + t('settings.server.sandboxOff'));
-      } else if (!probe.ready) {
-        out.className = 'server-diagnostic warn';
-        lines.push('✓ ' + t('settings.server.reachable'));
-        lines.push('✕ ' + (probe.reason || t('settings.server.sandboxNotReady')));
-      } else {
-        out.className = 'server-diagnostic good';
-        lines.push('✓ ' + t('settings.server.reachable'));
-        lines.push('✓ ' + t('settings.server.sandboxReady'));
-        lines.push((probe.allowNetwork ? '✓ ' : '✕ ') + t('settings.server.network'));
-        lines.push((probe.allowServices ? '✓ ' : '✕ ') + t('settings.server.services'));
-      }
-
-      out.textContent = lines.join('\n');
+      // A CONEXÃO é o veredito; o resto é inventário de capacidade opcional.
+      //
+      // Antes, sandbox desligada saía como "✕" em âmbar logo abaixo de
+      // "✓ Servidor respondeu" — e um ✕ alaranjado lê-se como falha. Daí o
+      // relato de "acusa que não conecta" enquanto o chat funcionava: a
+      // conexão estava OK, o que estava desligado era um recurso opcional.
+      // Recurso desligado por configuração é ESTADO, não erro.
+      renderServerDiagnostic(out, {
+        endpoint: getAurexApiBase().replace(/\/v\d+$/, ''),
+        probe: probe
+      });
     });
   }
 

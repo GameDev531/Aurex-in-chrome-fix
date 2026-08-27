@@ -2458,9 +2458,39 @@ body.temp-chat .temp-chat-pill { display: inline-flex; }
 }
 .server-diagnostic:empty { display: none; }
 .server-diagnostic.checking { color: var(--text-muted, #6b6f7d); }
-.server-diagnostic.good { border-color: rgba(0, 230, 138, 0.3); color: var(--accent-green); }
-.server-diagnostic.warn { border-color: rgba(232, 169, 75, 0.3); color: var(--accent-amber); }
-.server-diagnostic.bad  { border-color: rgba(255, 107, 107, 0.3); color: var(--accent-red); }
+/* A cor da BORDA fala do veredito (conectou?), não do inventário abaixo. */
+.server-diagnostic.good { border-color: rgba(0, 230, 138, 0.28); }
+.server-diagnostic.warn { border-color: rgba(232, 169, 75, 0.28); }
+.server-diagnostic.bad  { border-color: rgba(255, 107, 107, 0.28); }
+
+.diag-headline { font-weight: 600; font-size: 11.5px; }
+.server-diagnostic.good .diag-headline { color: var(--accent-green); }
+.server-diagnostic.warn .diag-headline { color: var(--accent-green); } /* conectou: o aviso é do recurso */
+.server-diagnostic.bad  .diag-headline { color: var(--accent-red); }
+
+.diag-endpoint { margin-top: 3px; color: var(--text-muted, #6b6f7d); font-size: 10.5px; }
+.diag-detail { margin-top: 5px; color: var(--accent-red); }
+
+.diag-caps { margin-top: 8px; display: grid; gap: 4px; }
+.diag-cap {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  /* Desligado é ESTADO, não erro: cinza neutro, sem ✕ e sem vermelho. */
+  color: var(--text-muted, #6b6f7d);
+}
+.diag-cap.on { color: var(--text-secondary, #b9bfcd); }
+.diag-dot {
+  width: 6px; height: 6px;
+  margin-top: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-faint, #4b4f5c);
+}
+.diag-cap.on .diag-dot { background: var(--accent-green); box-shadow: 0 0 6px rgba(0, 230, 138, 0.45); }
+
+.diag-hint { margin-top: 8px; color: var(--accent-amber); }
+.server-diagnostic.bad .diag-hint { color: var(--text-secondary, #b9bfcd); }
 
 .tool-evidence {
   display: flex;
