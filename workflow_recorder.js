@@ -39,22 +39,46 @@ export class WorkflowRecorder {
           return path.join(" > ");
         }
 
+        // Âncoras redundantes do elemento. Um caminho CSS sozinho quebra ao
+        // primeiro rename de classe ou mudança de layout — a causa nº1 de
+        // falha de replay em produção. Guardamos várias formas de reencontrar
+        // o mesmo elemento e o replay tenta na ordem da mais estável.
+        function describeTarget(el) {
+          if (!(el instanceof Element)) return {};
+          var label = el.getAttribute('aria-label') ||
+            (el.labels && el.labels[0] && el.labels[0].innerText) || '';
+          return {
+            selector: getCssPath(el),
+            tag: el.tagName.toLowerCase(),
+            id: el.id || null,
+            nameAttr: el.getAttribute('name') || null,
+            testId: el.getAttribute('data-testid') || el.getAttribute('data-test') || null,
+            role: el.getAttribute('role') || null,
+            type: el.getAttribute('type') || null,
+            placeholder: el.getAttribute('placeholder') || null,
+            ariaLabel: label ? String(label).trim().substring(0, 80) : null,
+            text: (el.innerText || el.value || '').trim().substring(0, 80) || null,
+            url: location.href
+          };
+        }
+
         document.addEventListener('click', (e) => {
           if (!window.__aurexRecorderActive) return;
-          const selector = getCssPath(e.target);
           chrome.runtime.sendMessage({
             type: "recorder_event",
-            event: { type: "click", selector: selector, timestamp: Date.now() }
+            event: Object.assign({ type: "click", timestamp: Date.now() }, describeTarget(e.target))
           });
         }, true);
 
         document.addEventListener('change', (e) => {
           if (!window.__aurexRecorderActive) return;
-          if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
-            const selector = getCssPath(e.target);
+          if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
             chrome.runtime.sendMessage({
               type: "recorder_event",
-              event: { type: "type", selector: selector, value: e.target.value, timestamp: Date.now() }
+              event: Object.assign(
+                { type: "type", value: e.target.value, timestamp: Date.now() },
+                describeTarget(e.target)
+              )
             });
           }
         }, true);
@@ -83,17 +107,85 @@ export class WorkflowRecorder {
     }
   }
 
-  static async saveWorkflow(name) {
-    const workflow = [...this.currentWorkflow];
+  // Formato único de workflow. Antes havia duas gravações incompatíveis
+  // (um array cru aqui e um objeto no popup), e nada lia de volta.
+  static buildWorkflow(name, steps, extra) {
+    return Object.assign({
+      version: 1,
+      name: name,
+      steps: (steps || []).map(function (step, index) {
+        return {
+          index: index,
+          type: step.type,          // 'click' | 'type'
+          selector: step.selector,
+          value: step.value,
+          url: step.url || null,
+          timestamp: step.timestamp,
+          // Âncoras de reserva contra deriva de seletor
+          tag: step.tag || null,
+          id: step.id || null,
+          nameAttr: step.nameAttr || null,
+          testId: step.testId || null,
+          role: step.role || null,
+          placeholder: step.placeholder || null,
+          ariaLabel: step.ariaLabel || null,
+          text: step.text || null
+        };
+      }),
+      narration: '',
+      createdAt: Date.now()
+    }, extra || {});
+  }
+
+  static async saveWorkflow(name, extra) {
+    const workflow = this.buildWorkflow(name, this.currentWorkflow, extra);
     return new Promise((resolve) => {
       chrome.storage.local.get(['aurex_workflows'], (result) => {
         const workflows = result.aurex_workflows || {};
         workflows[name] = workflow;
+        chrome.storage.local.set({ aurex_workflows: workflows }, () => resolve(workflow));
+      });
+    });
+  }
+
+  static async listWorkflows() {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(['aurex_workflows'], (result) => {
+        const stored = (result && result.aurex_workflows) || {};
+        // Migração silenciosa do formato antigo (array cru ou objeto sem version)
+        const normalized = Object.keys(stored).map((name) => {
+          const value = stored[name];
+          if (Array.isArray(value)) return this.buildWorkflow(name, value);
+          if (!value.version) return this.buildWorkflow(name, value.steps || [], { narration: value.narration || '', createdAt: value.createdAt });
+          return value;
+        });
+        resolve(normalized);
+      });
+    });
+  }
+
+  static async getWorkflow(name) {
+    const all = await this.listWorkflows();
+    return all.find((w) => w.name === name) || null;
+  }
+
+  static async deleteWorkflow(name) {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(['aurex_workflows'], (result) => {
+        const workflows = (result && result.aurex_workflows) || {};
+        delete workflows[name];
         chrome.storage.local.set({ aurex_workflows: workflows }, resolve);
       });
     });
   }
 
-  // O Replay vai usar o Runtime.evaluate no background.js para executar os cliques baseados no seletor,
-  // pois não temos o AXNode ID mapeado diretamente na gravação do DOM.
+  static async updateWorkflow(name, workflow) {
+    return new Promise((resolve) => {
+      chrome.storage.local.get(['aurex_workflows'], (result) => {
+        const workflows = (result && result.aurex_workflows) || {};
+        workflows[name] = Object.assign({}, workflow, { name: name, version: 1 });
+        chrome.storage.local.set({ aurex_workflows: workflows }, () => resolve(workflows[name]));
+      });
+    });
+  }
 }

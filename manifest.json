@@ -1,7 +1,7 @@
 {
     "manifest_version":  3,
     "name":  "Aurex in Chrome",
-    "version":  "1.0.0",
+    "version":  "1.1.0",
     "description":  "O poder do seu Terminal AurexAI, agora em todas as suas abas. Navegue, extraia e automatize.",
     "permissions":  [
                         "activeTab",
@@ -26,6 +26,9 @@
                              "http://*/*",
                              "https://*/*"
                          ],
+    "content_security_policy":  {
+                                    "extension_pages":  "script-src 'self'; object-src 'none'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; frame-src 'none'; base-uri 'none'; form-action 'none'"
+                                },
     "background":  {
                        "service_worker":  "background.js",
                        "type":  "module"

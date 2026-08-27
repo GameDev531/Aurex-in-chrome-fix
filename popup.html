@@ -4,12 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="popup.css">
-  <!-- Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Playfair+Display:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+  <!-- Fontes e ícones servidos do próprio pacote.
+       Antes vinham de fonts.googleapis.com, cdnjs e jsdelivr — três hosts de
+       terceiros com poder de escrita sobre a interface de uma página que tem
+       acesso às APIs do Chrome. O Tabler ainda vinha como @latest, ou seja,
+       o que o CDN servisse hoje. Além do risco de cadeia de suprimento, cada
+       abertura do painel vazava o IP do usuário para esses hosts e a UI
+       perdia todos os ícones quando o CDN estava fora ou o usuário offline. -->
+  <link rel="stylesheet" href="vendor/fonts.css">
+  <link rel="stylesheet" href="vendor/fontawesome/fontawesome.min.css">
+  <link rel="stylesheet" href="vendor/fontawesome/solid.min.css">
+  <link rel="stylesheet" href="vendor/tabler/tabler-icons.min.css">
   <!-- DOMPurify: Obrigatório para a renderização segura de widgets interativos -->
 </head>
 <body>
@@ -43,8 +48,8 @@
 
       <div class="sidebar-footer">
         <div class="user-profile">
-          <div class="avatar">G</div>
-          <span class="username" id="sidebar-username">Giovanni</span>
+          <div class="avatar" id="sidebar-avatar">A</div>
+          <span class="username" id="sidebar-username">Aurex</span>
         </div>
         <button id="open-settings" class="icon-btn" data-i18n-title="sidebar.settings" title="Configurações">
           <i class="fa-solid fa-gear"></i>
@@ -70,8 +75,12 @@
               <div class="mode-option-desc" data-i18n="mode.plan.desc">Pergunta antes de agir e cria um plano</div>
             </button>
             <button class="mode-option" data-mode="normal">
-              <div class="mode-option-title"><i class="fa-solid fa-bolt"></i> <span data-i18n="mode.normal">Normal</span></div>
+              <div class="mode-option-title"><i class="fa-solid fa-message"></i> <span data-i18n="mode.normal">Normal</span></div>
               <div class="mode-option-desc" data-i18n="mode.normal.desc">Age direto, sem criar plano</div>
+            </button>
+            <button class="mode-option" data-mode="fast">
+              <div class="mode-option-title"><i class="fa-solid fa-bolt"></i> <span data-i18n="mode.fast">Rápido</span></div>
+              <div class="mode-option-desc" data-i18n="mode.fast.desc">Respostas curtas e execução direta, sem rodeios</div>
             </button>
             <button class="mode-option" data-mode="autonomous">
               <div class="mode-option-title"><i class="fa-solid fa-robot"></i> <span data-i18n="mode.autonomous">Autônomo</span></div>
@@ -79,7 +88,18 @@
             </button>
           </div>
         </div>
+        <span class="usage-badge" id="usage-badge" style="display:none;">
+          <i class="fa-solid fa-gauge-simple-high"></i>
+          <span class="usage-value">0</span>
+        </span>
+        <span class="temp-chat-pill" id="temp-chat-pill"><i class="fa-solid fa-clock-rotate-left"></i> <span data-i18n="tempChat.pill">Chat temporário</span></span>
+        <button id="toggle-temp-chat" class="icon-btn" data-i18n-title="tempChat.toggle" title="Chat temporário (não salva no histórico)">
+          <i class="fa-solid fa-user-secret"></i>
+        </button>
       </header>
+
+      <!-- Banner de permissões (acima do chat, estilo Claude) -->
+      <div class="permission-banner-area" id="permission-banner-area"></div>
 
       <!-- Welcome Screen (Visible only on new chat) -->
       <div class="welcome-screen" id="welcome-screen">
@@ -89,6 +109,9 @@
         
         <div class="input-container center-input">
           <div class="input-wrapper">
+            <button class="composer-plus" data-plus-menu="welcome" data-i18n-title="plus.title" title="Adicionar" aria-haspopup="true" aria-expanded="false">
+              <i class="fa-solid fa-plus"></i>
+            </button>
             <textarea id="main-input" data-i18n-ph="welcome.placeholder" placeholder="Como posso ajudar você hoje no navegador?" rows="1"></textarea>
             <button id="send-btn" class="send-btn"><i class="fa-solid fa-arrow-up"></i></button>
           </div>
@@ -112,6 +135,9 @@
         
         <div class="chat-input-area">
           <div class="input-wrapper">
+            <button class="composer-plus" data-plus-menu="chat" data-i18n-title="plus.title" title="Adicionar" aria-haspopup="true" aria-expanded="false">
+              <i class="fa-solid fa-plus"></i>
+            </button>
             <textarea id="chat-bottom-input" data-i18n-ph="chat.placeholder" placeholder="Digite sua mensagem para o Aurex..." rows="1"></textarea>
             <button id="chat-send-btn" class="send-btn"><i class="fa-solid fa-arrow-up"></i></button>
           </div>
@@ -168,6 +194,10 @@
             </div>
             <div class="store-metrics" id="store-metrics"></div>
           </section>
+          <div class="store-search-wrap">
+            <i class="fa-solid fa-search"></i>
+            <input type="text" id="store-search" class="store-search-input" data-i18n-ph="skills.storeSearch" placeholder="Pesquisar habilidades...">
+          </div>
           <div class="store-filter-row" id="store-filter-row"></div>
           <div class="store-skills-list" id="store-skills-list">
             <!-- Catálogo gerado dinamicamente -->
@@ -188,6 +218,7 @@
             <button class="settings-tab active" data-settings-tab="general" data-i18n="settings.tab.general">Geral</button>
             <button class="settings-tab" data-settings-tab="personality" data-i18n="settings.tab.personality">Personalidade</button>
             <button class="settings-tab" data-settings-tab="shortcuts" data-i18n="settings.tab.shortcuts">Atalhos</button>
+            <button class="settings-tab" data-settings-tab="integrations" data-i18n="settings.tab.integrations">Integrações</button>
             <button class="settings-tab" data-settings-tab="file" data-i18n="settings.tab.file">Arquivo</button>
             <button class="settings-tab" data-settings-tab="keyboard" data-i18n="settings.tab.keyboard">Atalho de teclado</button>
             <button class="settings-tab" data-settings-tab="account" data-i18n="settings.tab.account">Conta</button>
@@ -200,7 +231,7 @@
             <div class="setting-block">
               <div class="setting-title" data-i18n="settings.server">Servidor</div>
               <div class="setting-desc" data-i18n="settings.server.desc">Endereço do servidor que processa as conversas. Use o seu servidor local se estiver rodando no terminal.</div>
-              <input type="text" id="server-url-input" class="setting-select" data-i18n-ph="settings.server.urlPh" placeholder="http://localhost:3000/v1">
+              <input type="text" id="server-url-input" class="setting-select" data-i18n-ph="settings.server.urlPh" placeholder="http://127.0.0.1:3030">
               <label class="setting-toggle-row" style="margin-top:12px;">
                 <div>
                   <div class="setting-toggle-label" data-i18n="settings.server.local">Servidor local (sem login)</div>
@@ -210,13 +241,29 @@
               </label>
               <div class="setting-toggle-label" style="margin-top:12px;" data-i18n="settings.server.key">Chave da API (opcional)</div>
               <input type="text" id="api-key-input" class="setting-select" style="margin-top:6px;" data-i18n-ph="settings.server.keyPh" placeholder="Cole sua chave se o servidor exigir">
-              <button class="action-btn primary" id="save-server" style="margin-top:12px;" data-i18n="settings.server.save">Salvar servidor</button>
+              <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+                <button class="action-btn primary" id="save-server" data-i18n="settings.server.save">Salvar servidor</button>
+                <button class="action-btn" id="test-server"><i class="fa-solid fa-stethoscope"></i> <span data-i18n="settings.server.test">Testar conexão</span></button>
+              </div>
+              <div id="server-diagnostic" class="server-diagnostic"></div>
             </div>
 
             <div class="setting-block">
               <div class="setting-title" data-i18n="settings.language">Idioma</div>
               <div class="setting-desc" data-i18n="settings.language.desc">Muda o idioma da interface e das respostas do Aurex</div>
               <select id="language-select" class="setting-select"></select>
+            </div>
+
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.cap.title">Limite de consumo</div>
+              <div class="setting-desc" data-i18n="settings.cap.desc">O Aurex pausa e devolve a decisão a você quando a conversa passar deste total de tokens. Protege contra tarefas autônomas longas queimarem sua cota. Deixe vazio ou 0 para não ter limite.</div>
+              <select id="token-cap-select" class="setting-select">
+                <option value="0" data-i18n="settings.cap.none">Sem limite</option>
+                <option value="100000">100.000 tokens</option>
+                <option value="250000">250.000 tokens</option>
+                <option value="500000">500.000 tokens</option>
+                <option value="1000000">1.000.000 tokens</option>
+              </select>
             </div>
 
             <div class="setting-block">
@@ -277,6 +324,68 @@
             </div>
           </div>
 
+          <!-- INTEGRAÇÕES (chaves de API do usuário) -->
+          <div class="settings-section" id="settings-integrations">
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.search.title">Busca na web</div>
+              <div class="setting-desc" data-i18n="settings.search.desc">Escolha o provedor de busca e cole sua própria chave. Sem isso, o Aurex pesquisa abrindo um buscador em uma aba.</div>
+              <select id="search-provider" class="setting-select"></select>
+              <input type="text" id="search-model" class="setting-select hidden" style="margin-top:8px;" data-i18n-ph="settings.search.modelPh" placeholder="Modelo (padrão: gemini-3.6-flash)">
+              <input type="password" id="search-key" class="setting-select" style="margin-top:8px;" data-i18n-ph="settings.search.keyPh" placeholder="Cole a chave do provedor escolhido">
+              <button class="action-btn primary" id="save-search" style="margin-top:10px;"><i class="fa-solid fa-magnifying-glass"></i> <span data-i18n="settings.search.save">Salvar busca</span></button>
+              <div class="integration-status" id="search-status"></div>
+            </div>
+
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.places.title">Google Maps (Places API New)</div>
+              <div class="setting-desc" data-i18n="settings.places.desc">Cole sua chave do Google Places API (New) para o Aurex consultar endereços, estabelecimentos, horários e avaliações pela API oficial — em vez de tentar ler o site do Maps.</div>
+              <input type="password" id="places-key" class="setting-select" data-i18n-ph="settings.places.keyPh" placeholder="Chave do Google Places API (New)">
+              <button class="action-btn primary" id="save-places" style="margin-top:10px;"><i class="fa-solid fa-location-dot"></i> <span data-i18n="settings.places.save">Salvar chave do Places</span></button>
+              <div class="integration-status" id="places-status"></div>
+            </div>
+
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.mcp.title">Servidores MCP</div>
+              <div class="setting-desc" data-i18n="settings.mcp.desc">Conecte servidores MCP remotos para dar novas ferramentas ao Aurex. Apenas servidores HTTPS remotos — uma extensão não consegue iniciar servidores locais.</div>
+              <input type="text" id="mcp-name" class="setting-select" data-i18n-ph="settings.mcp.namePh" placeholder="Nome (ex: meu-servidor)">
+              <input type="text" id="mcp-url" class="setting-select" style="margin-top:8px;" data-i18n-ph="settings.mcp.urlPh" placeholder="https://servidor.exemplo.com/mcp">
+              <input type="password" id="mcp-token" class="setting-select" style="margin-top:8px;" data-i18n-ph="settings.mcp.tokenPh" placeholder="Token de acesso (opcional)">
+              <button class="action-btn primary" id="mcp-add" style="margin-top:10px;"><i class="fa-solid fa-plug"></i> <span data-i18n="settings.mcp.add">Conectar servidor</span></button>
+              <div id="mcp-status" class="integration-status"></div>
+              <div id="mcp-list" class="integrations-list"></div>
+              <div class="integration-note">
+                <i class="fa-solid fa-shield-halved"></i>
+                <span data-i18n="settings.mcp.note">As descrições das ferramentas são fixadas por assinatura quando você conecta, e é sempre a versão fixada que o modelo enxerga. Se o servidor alterá-las depois, o servidor inteiro fica suspenso até você ler o que mudou e reaprovar.</span>
+              </div>
+            </div>
+
+            <div class="setting-block">
+              <div class="setting-title" data-i18n="settings.integrations.title">Chaves de API</div>
+              <div class="setting-desc" data-i18n="settings.integrations.desc">Cadastre suas próprias chaves para o Aurex usar as APIs oficiais (Google Maps, clima, notícias). É o jeito certo de obter dados de serviços que não permitem automação na página — sem depender de raspar o site.</div>
+
+              <div class="integration-form">
+                <select id="integration-service" class="setting-select"></select>
+                <div id="integration-custom-fields" class="hidden">
+                  <input type="text" id="integration-host" class="setting-select" style="margin-top:8px;" data-i18n-ph="settings.integrations.hostPh" placeholder="Host da API (ex: api.exemplo.com)">
+                  <input type="text" id="integration-param" class="setting-select" style="margin-top:8px;" data-i18n-ph="settings.integrations.paramPh" placeholder="Nome do parâmetro (ex: key) ou header (ex: X-Api-Key)">
+                  <label class="setting-toggle-row" style="margin-top:8px;">
+                    <div><div class="setting-toggle-label" data-i18n="settings.integrations.asHeader">Enviar como header</div></div>
+                    <span class="switch"><input type="checkbox" id="integration-as-header"><span class="slider"></span></span>
+                  </label>
+                </div>
+                <input type="password" id="integration-key" class="setting-select" style="margin-top:8px;" data-i18n-ph="settings.integrations.keyPh" placeholder="Cole sua chave de API">
+                <button class="action-btn primary" id="add-integration" style="margin-top:10px;"><i class="fa-solid fa-plus"></i> <span data-i18n="settings.integrations.add">Adicionar chave</span></button>
+              </div>
+
+              <div id="integrations-list" class="integrations-list"></div>
+
+              <div class="integration-note">
+                <i class="fa-solid fa-shield-halved"></i>
+                <span data-i18n="settings.integrations.note">As chaves ficam salvas apenas neste navegador e são enviadas somente para o host correspondente. O modelo nunca vê o valor da chave — o Aurex a injeta na requisição.</span>
+              </div>
+            </div>
+          </div>
+
           <!-- ARQUIVO -->
           <div class="settings-section" id="settings-file">
             <div class="setting-block">
@@ -288,6 +397,7 @@
                 <option value="html">HTML (.html)</option>
                 <option value="csv">CSV (.csv)</option>
                 <option value="json">JSON (.json)</option>
+                <option value="docx">Word (.docx)</option>
               </select>
             </div>
           </div>
@@ -342,18 +452,67 @@
             <div class="teach-status" id="teach-status"></div>
             <div class="teach-transcript" id="teach-transcript"></div>
           </div>
+          <div class="setting-block" style="margin-top:18px;">
+            <div class="setting-title" data-i18n="teach.saved.title">Fluxos gravados</div>
+            <div class="setting-desc" data-i18n="teach.saved.desc">Reexecute um fluxo na aba atual ou apague o que não usa mais.</div>
+            <div id="workflows-list" class="workflows-list"></div>
+          </div>
         </div>
       </div>
 
     </main>
+
+    <!-- Onboarding: login + nome + aviso beta -->
+    <div class="onboarding-overlay hidden" id="onboarding-overlay">
+      <div class="onboarding-card">
+        <div class="onboarding-logo">A</div>
+
+        <!-- Passo 1: conectar conta -->
+        <div id="onboarding-step-login" class="hidden">
+          <h2 data-i18n="onboarding.loginTitle">Conecte sua conta Aurex</h2>
+          <p data-i18n="onboarding.loginDesc">Para começar, conecte sua conta Aurex ou use um servidor local nas Configurações.</p>
+          <div class="onboarding-actions" style="margin-top: 14px;">
+            <button class="action-btn primary" id="onboarding-login-btn"><i class="fa-solid fa-right-to-bracket"></i> <span data-i18n="onboarding.loginBtn">Conectar conta</span></button>
+            <button class="onboarding-skip" id="onboarding-local-btn" data-i18n="onboarding.useLocal">Usar servidor local (sem login)</button>
+          </div>
+        </div>
+
+        <!-- Passo 2: nome + beta -->
+        <div id="onboarding-step-name" class="hidden">
+          <h2 data-i18n="onboarding.nameTitle">Como devemos te chamar?</h2>
+          <p data-i18n="onboarding.nameDesc">O Aurex vai usar seu nome para personalizar a conversa.</p>
+          <input type="text" id="onboarding-name-input" maxlength="40" autocomplete="off" data-i18n-ph="onboarding.namePh" placeholder="Ex: Paulo" style="margin-top: 10px;">
+          <div class="onboarding-beta" style="margin-top: 12px;">
+            <i class="fa-solid fa-flask"></i>
+            <span data-i18n="onboarding.beta">Aurex in Chrome está em beta. Podem ocorrer erros e existem riscos ao automatizar ações no navegador. Revise as ações em sites sensíveis.</span>
+          </div>
+          <div class="onboarding-actions" style="margin-top: 14px;">
+            <button class="action-btn primary" id="onboarding-name-btn"><i class="fa-solid fa-arrow-right"></i> <span data-i18n="onboarding.start">Começar</span></button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Menu de atalhos (aparece ao digitar / no chat) -->
   <div class="slash-menu hidden" id="slash-menu"></div>
 
+  <input type="file" id="composer-file" accept="image/*,.txt,.md,.json,.csv,.log,.js,.ts,.py,.html,.css" style="display:none;">
   <script src="dompurify.min.js"></script>
   <script src="gsap.min.js"></script>
   <script src="i18n.js"></script>
+  <script src="sandbox_client.js"></script>
+  <script src="mcp_client.js"></script>
+  <!-- Scripts clássicos num único escopo global: a ordem importa apenas para
+       o que roda no carregamento. Os módulos abaixo só DECLARAM funções e
+       constantes; quem chama é o popup.js, no DOMContentLoaded. -->
+  <script src="store_catalog.js"></script>
+  <script src="ui_motion.js"></script>
+  <script src="activity_log.js"></script>
+  <script src="docx.js"></script>
+  <script src="net_guard.js"></script>
+  <script src="web_tools.js"></script>
+  <script src="browser_tools.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

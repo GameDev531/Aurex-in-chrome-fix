@@ -1,0 +1,31 @@
+# Bibliotecas disponíveis dentro da sandbox.
+# Versões fixadas: build reproduzível e sem surpresa em atualização.
+#
+# Elas processam arquivos que o agente pegou da web, então CVE de "DoS por
+# arquivo malformado" aqui não é teórico — é o caminho de entrada normal.
+# Ao mexer, rode o scanner de novo: o container isola, mas não é desculpa
+# para rodar parser desatualizado.
+
+# Documentos
+python-docx==1.1.2
+openpyxl==3.1.5
+XlsxWriter==3.2.0
+python-pptx==1.0.2
+reportlab==4.2.5
+pypdf==6.16.1
+pdfplumber==0.11.4
+
+# Dados e gráficos
+pandas==2.2.3
+numpy==2.1.3
+matplotlib==3.9.2
+Pillow==12.3.0
+tabulate==0.9.0
+
+# Texto e parsing
+beautifulsoup4==4.12.3
+lxml==6.1.2
+markdown==3.10.3
+jinja2==3.1.6
+python-dateutil==2.9.0.post0
+requests==2.34.2
