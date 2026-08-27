@@ -109,6 +109,9 @@
         
         <div class="input-container center-input">
           <div class="input-wrapper">
+            <button class="composer-plus" data-plus-menu="welcome" data-i18n-title="plus.title" title="Adicionar" aria-haspopup="true" aria-expanded="false">
+              <i class="fa-solid fa-plus"></i>
+            </button>
             <textarea id="main-input" data-i18n-ph="welcome.placeholder" placeholder="Como posso ajudar você hoje no navegador?" rows="1"></textarea>
             <button id="send-btn" class="send-btn"><i class="fa-solid fa-arrow-up"></i></button>
           </div>
@@ -132,6 +135,9 @@
         
         <div class="chat-input-area">
           <div class="input-wrapper">
+            <button class="composer-plus" data-plus-menu="chat" data-i18n-title="plus.title" title="Adicionar" aria-haspopup="true" aria-expanded="false">
+              <i class="fa-solid fa-plus"></i>
+            </button>
             <textarea id="chat-bottom-input" data-i18n-ph="chat.placeholder" placeholder="Digite sua mensagem para o Aurex..." rows="1"></textarea>
             <button id="chat-send-btn" class="send-btn"><i class="fa-solid fa-arrow-up"></i></button>
           </div>
@@ -491,6 +497,7 @@
   <!-- Menu de atalhos (aparece ao digitar / no chat) -->
   <div class="slash-menu hidden" id="slash-menu"></div>
 
+  <input type="file" id="composer-file" accept="image/*,.txt,.md,.json,.csv,.log,.js,.ts,.py,.html,.css" style="display:none;">
   <script src="dompurify.min.js"></script>
   <script src="gsap.min.js"></script>
   <script src="i18n.js"></script>

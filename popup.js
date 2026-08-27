@@ -894,6 +894,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupTabSpeech();
   setupMotion();
   setupTempChat();
+  setupPlusMenu();
   setupOnboarding();
   // Aquece a sonda da sandbox para a primeira mensagem já saber o estado real
   if (typeof AurexSandbox !== 'undefined') {
@@ -1692,9 +1693,13 @@ function appendMessageToUI(role, content, shouldSave) {
       }
       msgDiv.appendChild(contentDiv);
     } else {
-      // Resposta normal sem widgets
+      // Resposta normal sem widgets.
+      // O wrapper .streamable é o alvo da revelação progressiva: existir
+      // sempre (mesmo sem animação) mantém a estrutura idêntica no histórico
+      // recarregado, onde não há streaming nenhum.
       var senderHtml = '<div class="message-sender">Aurex</div>';
-      var contentHtml = '<div class="message-content assistant-copy" style="display:flex; flex-direction:column; gap:8px;">' + parseMarkdown(content) + '</div>';
+      var contentHtml = '<div class="message-content assistant-copy" style="display:flex; flex-direction:column; gap:8px;">' +
+        '<div class="streamable">' + parseMarkdown(content) + '</div></div>';
       msgDiv.innerHTML = senderHtml + contentHtml;
     }
   } else if (role === 'user') {
@@ -1739,6 +1744,64 @@ function appendMessageToUI(role, content, shouldSave) {
   }
   
   return msgDiv;
+}
+
+// ========== STREAMING DA RESPOSTA ==========
+//
+// O servidor devolve a resposta INTEIRA (stream:false), então não há tokens
+// chegando de verdade. Reproduzir isso com máquina de escrever caractere a
+// caractere ficaria falso e lento — e a leitura fica pior, porque a palavra
+// só faz sentido depois de completa.
+//
+// Aqui a revelação é por PALAVRA, em blocos que variam com o tamanho do
+// texto: resposta curta aparece quase inteira, resposta longa flui. E o
+// trecho recém-revelado recebe um realce que apaga sozinho, que é o que dá a
+// sensação de "chegando agora" sem precisar animar cada letra.
+var AUREX_STREAM_MS = 16;
+
+function prefersReducedMotion() {
+  try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; }
+  catch (e) { return false; }
+}
+
+function streamAssistantMessage(node, content) {
+  if (!node || typeof content !== 'string' || !content) return;
+  // Widget é HTML sanitizado e montado de uma vez: revelar por partes
+  // renderizaria marcação quebrada no meio do caminho.
+  if (content.indexOf('<widget>') !== -1) return;
+
+  var alvo = node.querySelector('.message-content .streamable');
+  if (!alvo) return;
+
+  if (prefersReducedMotion()) { alvo.classList.remove('streaming'); return; }
+
+  var palavras = content.split(/(\s+)/);
+  // Quanto maior a resposta, mais palavras por quadro — senão um texto longo
+  // levaria tempo demais e a fluidez viraria espera.
+  var porQuadro = Math.max(1, Math.ceil(palavras.length / 120));
+  var i = 0;
+
+  alvo.classList.add('streaming');
+
+  function passo() {
+    if (i >= palavras.length) {
+      alvo.classList.remove('streaming');
+      alvo.innerHTML = parseMarkdown(content);
+      return;
+    }
+    i = Math.min(palavras.length, i + porQuadro * 2);
+    var parcial = palavras.slice(0, i).join('');
+    // Markdown a cada passo mantém listas e código formatados enquanto flui,
+    // em vez de mostrar a sintaxe crua e reformatar no fim.
+    alvo.innerHTML = parseMarkdown(parcial) + '<span class="stream-cursor"></span>';
+
+    var container = document.getElementById('messages-container');
+    if (container) container.scrollTop = container.scrollHeight;
+    setTimeout(passo, AUREX_STREAM_MS);
+  }
+
+  alvo.innerHTML = '';
+  setTimeout(passo, AUREX_STREAM_MS);
 }
 
 function appendServiceUnavailableMessage() {
@@ -2043,12 +2106,18 @@ function appendToolCallToUI(name, args) {
 
   // O ícone tipado substitui o emoji: manter os dois seria ruído dobrado.
   var cleanLabel = humanMessage.replace(/^[^\p{L}\p{N}]+/u, '').replace(/\.{3}$/, '').trim();
+  var target = activityTargetFor(name, args);
+
+  // O alvo já aparece no chip ao lado. Sem isto a linha lia
+  // "Executando na sandbox: npm run build" seguida de `npm run bui…` — o
+  // mesmo dado duas vezes, e o truncado empurrando o resto para fora.
+  if (target) cleanLabel = cleanLabel.replace(/\s*[:—-]\s*.*$/, '').trim() || cleanLabel;
 
   var row = AurexActivity.addRow({
     kind: activityKindFor(name, args),
     icon: (ACTIVITY_KINDS[activityKindFor(name, args)] || ACTIVITY_KINDS.other).icon,
     label: cleanLabel,
-    target: activityTargetFor(name, args)
+    target: target
   });
 
   if (!row) return msgDiv; // sem container (aba de configurações aberta, etc.)
@@ -2533,6 +2602,22 @@ async function sendUserMessage(text, options) {
 
   var messageContent = text;
 
+  // Anexo pendente entra JUNTO com a mensagem, e some depois de enviado —
+  // ficar pendurado faria a próxima pergunta carregar um arquivo antigo sem
+  // ninguém pedir.
+  if (_pendingAttachment) {
+    if (_pendingAttachment.kind === 'image') {
+      messageContent = [
+        { type: 'text', text: text || 'Analise esta imagem.' },
+        { type: 'image_url', image_url: { url: _pendingAttachment.dataUrl } }
+      ];
+    } else {
+      messageContent = (text ? text + '\n\n' : '') +
+        'Conteúdo do arquivo "' + _pendingAttachment.name + '":\n\n' + _pendingAttachment.text;
+    }
+    clearComposerAttachment();
+  }
+
   appendMessageToUI('user', messageContent);
   var msg = { role: "user", content: messageContent };
   // Mensagens de voz são efêmeras: o Aurex segue o conteúdo, mas elas não são
@@ -2745,7 +2830,8 @@ async function processLLMLoop(iterationCount = 0) {
 
     // Text emitted while tools are still pending is operational reasoning, not chat output.
     if (_isVisibleAssistantMessage(responseMsg)) {
-      appendMessageToUI('assistant', responseMsg.content);
+      var node = appendMessageToUI('assistant', responseMsg.content);
+      streamAssistantMessage(node, responseMsg.content);
     }
 
     if (responseMsg.tool_calls && responseMsg.tool_calls.length > 0) {
@@ -3618,6 +3704,233 @@ function showAurexNotification(title, message) {
 function notifyTaskComplete(message) {
   if (localStorage.getItem('aurex_notify') !== 'true') return;
   showAurexNotification('Aurex', message || 'Sua tarefa foi concluída.');
+}
+
+// ========== MENU "+" DO COMPOSER ==========
+//
+// MCP e Skills estavam escondidos em lugares diferentes e nada óbvios: MCP em
+// Configurações ▸ Integrações, Skills atrás de "Mais skills..." na tela
+// inicial — que some assim que a conversa começa. Quem já está conversando
+// não tinha caminho nenhum até eles. O "+" fica ao lado de onde a pessoa
+// está digitando, que é onde a intenção nasce.
+
+// Abre um painel específico e leva direto à seção pedida, em vez de largar o
+// usuário na primeira aba para procurar.
+function openSettingsAt(tabName) {
+  var panel = document.getElementById('settings-panel');
+  if (!panel) return;
+  panel.classList.remove('hidden');
+  var sidebar = document.getElementById('sidebar');
+  if (sidebar) sidebar.classList.add('hidden');
+
+  var tab = document.querySelector('.settings-tab[data-settings-tab="' + tabName + '"]');
+  if (tab) tab.click();
+
+  if (typeof renderApprovedSites === 'function') renderApprovedSites();
+  if (typeof renderShortcutsList === 'function') renderShortcutsList();
+  return panel;
+}
+
+function openSkillsPanel(tab) {
+  var panel = document.getElementById('skills-panel');
+  if (!panel) return;
+  panel.classList.remove('hidden');
+  if (typeof renderSkillsLists === 'function') renderSkillsLists();
+  if (tab) {
+    var btn = document.querySelector('.skills-tab[data-skills-tab="' + tab + '"]');
+    if (btn) btn.click();
+  }
+  if (typeof MotionUI !== 'undefined' && MotionUI.openSkills) MotionUI.openSkills(panel);
+}
+
+var AUREX_PLUS_ITEMS = [
+  { id: 'file',    icon: 'fa-paperclip',        label: 'plus.file',    desc: 'plus.file.desc' },
+  { id: 'mcp',     icon: 'fa-plug',             label: 'plus.mcp',     desc: 'plus.mcp.desc' },
+  { id: 'skill',   icon: 'fa-graduation-cap',   label: 'plus.skill',   desc: 'plus.skill.desc' },
+  { id: 'context', icon: 'fa-file-lines',       label: 'plus.context', desc: 'plus.context.desc' },
+  { id: 'tool',    icon: 'fa-wand-magic-sparkles', label: 'plus.tool', desc: 'plus.tool.desc' }
+];
+
+function closePlusMenu() {
+  document.querySelectorAll('.plus-menu').forEach(function (m) { m.remove(); });
+  document.querySelectorAll('.composer-plus').forEach(function (b) {
+    b.classList.remove('open');
+    b.setAttribute('aria-expanded', 'false');
+  });
+}
+
+function runPlusAction(id) {
+  closePlusMenu();
+  if (id === 'mcp') {
+    openSettingsAt('integrations');
+    // Rola até o bloco de MCP e pisca: abrir a aba certa e deixar o usuário
+    // procurando na página seria metade do caminho.
+    var url = document.getElementById('mcp-url');
+    if (url) {
+      url.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      url.focus({ preventScroll: true });
+      var bloco = url.closest('.setting-block');
+      if (bloco) {
+        bloco.classList.add('setting-block-flash');
+        setTimeout(function () { bloco.classList.remove('setting-block-flash'); }, 1400);
+      }
+    }
+    return;
+  }
+  if (id === 'skill') { openSkillsPanel('store'); return; }
+  if (id === 'file') {
+    var input = document.getElementById('composer-file');
+    if (input) input.click();
+    return;
+  }
+  if (id === 'context') { insertComposerText('Use o conteúdo da aba atual como contexto: '); return; }
+  if (id === 'tool') { insertComposerText('/'); return; }
+}
+
+// ---------- Anexo do composer ----------
+var _pendingAttachment = null;
+var AUREX_ATTACH_MAX_BYTES = 4 * 1024 * 1024;
+
+function clearComposerAttachment() {
+  _pendingAttachment = null;
+  document.querySelectorAll('.composer-attachment').forEach(function (el) { el.remove(); });
+}
+
+function renderComposerAttachment() {
+  document.querySelectorAll('.composer-attachment').forEach(function (el) { el.remove(); });
+  if (!_pendingAttachment) return;
+
+  var chat = document.getElementById('chat-bottom-input');
+  var welcome = document.getElementById('main-input');
+  var target = (chat && chat.offsetParent !== null) ? chat : welcome;
+  if (!target) return;
+
+  var chip = document.createElement('div');
+  chip.className = 'composer-attachment';
+
+  var icon = document.createElement('i');
+  icon.className = 'fa-solid ' + (_pendingAttachment.kind === 'image' ? 'fa-image' : 'fa-file-lines');
+  chip.appendChild(icon);
+
+  var name = document.createElement('span');
+  name.className = 'composer-attachment-name';
+  name.textContent = _pendingAttachment.name;
+  chip.appendChild(name);
+
+  var remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'composer-attachment-remove';
+  remove.setAttribute('aria-label', t('plus.removeAttachment'));
+  remove.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+  remove.addEventListener('click', clearComposerAttachment);
+  chip.appendChild(remove);
+
+  target.parentElement.insertBefore(chip, target);
+}
+
+function attachFileToComposer(file) {
+  if (file.size > AUREX_ATTACH_MAX_BYTES) {
+    appendMessageToUI('assistant', t('plus.tooBig'));
+    return;
+  }
+  var reader = new FileReader();
+  var ehImagem = /^image\//.test(file.type);
+
+  reader.onload = function () {
+    _pendingAttachment = ehImagem
+      ? { kind: 'image', name: file.name, dataUrl: reader.result }
+      // Texto é cortado: um arquivo grande sozinho estouraria o contexto e o
+      // teto de gasto da conversa.
+      : { kind: 'text', name: file.name, text: String(reader.result).slice(0, 100000) };
+    renderComposerAttachment();
+  };
+  reader.onerror = function () { appendMessageToUI('assistant', t('plus.readError')); };
+
+  if (ehImagem) reader.readAsDataURL(file);
+  else reader.readAsText(file);
+}
+
+// Escreve no composer que está visível e devolve o foco: o menu é um atalho
+// para a digitação, não um desvio dela.
+function insertComposerText(text) {
+  var chat = document.getElementById('chat-bottom-input');
+  var welcome = document.getElementById('main-input');
+  var target = (chat && chat.offsetParent !== null) ? chat : welcome;
+  if (!target) return;
+  target.value = text + target.value;
+  target.focus();
+  target.setSelectionRange(target.value.length, target.value.length);
+  target.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function buildPlusMenu(anchor) {
+  var menu = document.createElement('div');
+  menu.className = 'plus-menu';
+  menu.setAttribute('role', 'menu');
+
+  AUREX_PLUS_ITEMS.forEach(function (item) {
+    var row = document.createElement('button');
+    row.className = 'plus-item';
+    row.type = 'button';
+    row.setAttribute('role', 'menuitem');
+
+    var icon = document.createElement('i');
+    icon.className = 'fa-solid ' + item.icon;
+    row.appendChild(icon);
+
+    var texts = document.createElement('span');
+    texts.className = 'plus-item-text';
+    var label = document.createElement('span');
+    label.className = 'plus-item-label';
+    label.textContent = t(item.label);
+    texts.appendChild(label);
+    var desc = document.createElement('span');
+    desc.className = 'plus-item-desc';
+    desc.textContent = t(item.desc);
+    texts.appendChild(desc);
+    row.appendChild(texts);
+
+    row.addEventListener('click', function (e) {
+      e.stopPropagation();
+      runPlusAction(item.id);
+    });
+    menu.appendChild(row);
+  });
+
+  anchor.parentElement.appendChild(menu);
+  return menu;
+}
+
+function setupPlusMenu() {
+  document.querySelectorAll('.composer-plus').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      var aberto = btn.classList.contains('open');
+      closePlusMenu();
+      if (aberto) return;
+      btn.classList.add('open');
+      btn.setAttribute('aria-expanded', 'true');
+      buildPlusMenu(btn);
+    });
+  });
+
+  document.addEventListener('click', function (e) {
+    if (!e.target.closest('.plus-menu') && !e.target.closest('.composer-plus')) closePlusMenu();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closePlusMenu();
+  });
+
+  // Anexo: imagem entra como conteúdo visual, texto entra como texto.
+  var file = document.getElementById('composer-file');
+  if (file) {
+    file.addEventListener('change', function () {
+      var chosen = file.files && file.files[0];
+      if (!chosen) return;
+      attachFileToComposer(chosen);
+      file.value = '';
+    });
+  }
 }
 
 // ========== PAINEL DE CONFIGURAÇÕES ==========
