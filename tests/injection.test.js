@@ -40,7 +40,9 @@ group('Marcação: o bloco envolve o resultado', () => {
 group('Marcação: o nonce é imprevisível e muda por conversa', () => {
   scope.reset();
   const primeira = scope.nonce();
-  check('é hexadecimal de 16 caracteres', /^[0-9a-f]{16}$/.test(primeira), primeira);
+  // 128 bits: a página teria de adivinhar o marcador para fechar o bloco e
+  // voltar ao canal de instruções.
+  check('é hexadecimal de 32 caracteres (128 bits)', /^[0-9a-f]{32}$/.test(primeira), primeira);
   check('estável dentro da mesma conversa', scope.nonce() === primeira);
 
   scope.reset();

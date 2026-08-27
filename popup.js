@@ -235,6 +235,31 @@ async function logoutAurexChrome() {
     }).catch(() => {});
   }
   await storageRemove(AUREX_AUTH_STORAGE_KEY);
+
+  // Sair precisa levar os SEGREDOS junto. Antes o logout removia só o token
+  // do Aurex e deixava para trás as chaves de API do usuário, os tokens dos
+  // servidores MCP e o histórico completo das conversas — que contém o
+  // conteúdo das páginas que o agente leu. Numa máquina compartilhada, "sair"
+  // que não apaga nada disso é pior do que não ter botão de sair.
+  clearLocalSecrets();
+}
+
+// Tudo que é credencial ou conteúdo de conversa. Preferências (idioma, modo,
+// atalhos, skills) ficam: não são segredo e perdê-las só irrita.
+var AUREX_SECRET_KEYS = [
+  'aurex_api_key',            // chave do servidor Aurex
+  'aurex_places_key',         // Google Places
+  'aurex_search_key',         // provedor de busca
+  'aurex_api_integrations',   // chaves de API que o usuário cadastrou
+  'aurex_mcp_servers',        // inclui o bearer token de cada servidor MCP
+  'aurex_chats',              // histórico: carrega o conteúdo das páginas lidas
+  'aurex_active_task'
+];
+
+function clearLocalSecrets() {
+  AUREX_SECRET_KEYS.forEach(function (key) {
+    try { localStorage.removeItem(key); } catch (e) { /* storage indisponível */ }
+  });
 }
 var SYSTEM_PROMPT = "Voc\u00ea \u00e9 o Aurex, um Web Agent inteligente integrado ao navegador Chrome.\n" +
 "Seu trabalho \u00e9 analisar p\u00e1ginas, interagir com elas e fornecer relat\u00f3rios diretos e profissionais.\n" +
@@ -2261,7 +2286,9 @@ var _untrustedNonce = null;
 
 function untrustedNonce() {
   if (!_untrustedNonce) {
-    var bytes = new Uint8Array(8);
+    // 16 bytes (128 bits). Com 8, um modelo adversarial induzido por injeção
+    // teria 64 bits para adivinhar — folgado, mas o custo de dobrar é zero.
+    var bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
     _untrustedNonce = Array.from(bytes).map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
   }

@@ -46,16 +46,19 @@ document.addEventListener('DOMContentLoaded', function () {
       return;
     }
 
-    var session = {
-      accessToken: 'session-' + Date.now(),
-      refreshToken: 'session-refresh',
-      accessTokenExpiresAt: Date.now() + 1000 * 60 * 60 * 24 * 30,
-      user: { name: name, org: 'Orvion Labs' }
-    };
-
+    // Esta tela é ONBOARDING (nome + consentimento), não autenticação.
+    //
+    // Antes ela gravava um token inventado ('session-' + Date.now(), refresh
+    // fixo 'session-refresh', 30 dias de validade) na MESMA chave que o fluxo
+    // OAuth real usa. O efeito não era dar acesso — o servidor rejeita esse
+    // token — era pior de um jeito silencioso: getAurexAccessToken() via um
+    // token "válido por 30 dias" e NUNCA disparava o login de verdade. A
+    // extensão se achava autenticada, o servidor devolvia 401, o painel
+    // limpava o storage e pedia login de novo, e o onboarding gravava outro
+    // token falso. Credencial fabricada não vira credencial melhor sendo
+    // aleatória: ela simplesmente não deve existir.
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       chrome.storage.local.set({
-        aurex_auth_tokens: session,
         aurex_user_name: name,
         aurex_onboarded: true
       }, function () {

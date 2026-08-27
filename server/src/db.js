@@ -116,7 +116,16 @@ export async function initDb() {
     `);
     console.log('[Aurex DB] Postgres conectado e tabelas garantidas.');
   } catch (err) {
+    // Cair para memória apaga refresh tokens, códigos de autorização e a
+    // auditoria da sandbox a cada restart — e mascara uma queda do banco como
+    // se fosse funcionamento normal. Em desenvolvimento é conveniente; em
+    // produção é justamente o que não se quer descobrir depois.
+    if (String(process.env.AUREX_REQUIRE_POSTGRES || '').toLowerCase() === 'true') {
+      console.error('[Aurex DB] Postgres inacessível e AUREX_REQUIRE_POSTGRES=true — abortando em vez de cair para memória:', err.message);
+      throw err;
+    }
     console.error('[Aurex DB] Falha ao conectar no Postgres, caindo para memória:', err.message);
+    console.warn('[Aurex DB] AVISO: sessões e tokens vivem só na RAM e somem no restart. Defina AUREX_REQUIRE_POSTGRES=true em produção.');
     pool = null;
   }
 }

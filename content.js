@@ -63,14 +63,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ success: false, error: "Element not found" });
         }
       }
-      else if (command === "navigate") {
-        window.location.href = value;
-        sendResponse({ success: true, message: `Navigating to: ${value}` });
-      }
-      else if (command === "search_web") {
-        window.location.href = `https://www.google.com/search?q=${encodeURIComponent(value)}`;
-        sendResponse({ success: true, message: `Pesquisando no Google por: ${value}` });
-      }
+      // "navigate" e "search_web" foram REMOVIDOS daqui.
+      //
+      // Este ramo fazia `window.location.href = value` sem validar o esquema,
+      // ou seja, aceitaria javascript:, data: e file:. Ele já estava morto — a
+      // navegação é tratada em popup.js, que usa chrome.tabs.update e força
+      // https — mas código morto que escreve em location.href é uma armadilha
+      // esperando um refactor. Guardar um caminho que ninguém usa é pior do
+      // que apagá-lo: some da superfície de ataque e some da leitura.
       else {
         sendResponse({ success: false, error: "Unknown command: " + command });
       }

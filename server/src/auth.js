@@ -45,6 +45,14 @@ function pruneExpiredLogins() {
   }
 }
 
+// A limpeza rodava SÓ quando chegava um novo /auth/login. Um atacante que
+// enchesse o mapa até o teto e parasse deixava 5.000 entradas ocupando memória
+// até alguém tentar logar — e como o teto devolve 429, o próximo login
+// legítimo era recusado sem que nada limpasse o caminho. Agora a varredura é
+// periódica e independente de tráfego.
+const loginSweeper = setInterval(pruneExpiredLogins, 60000);
+if (typeof loginSweeper.unref === 'function') loginSweeper.unref(); // não segura o processo
+
 // Allowlist de destinos do código de autorização. A extensão usa
 // chrome.identity.getRedirectURL(), que é sempre
 // https://<id-da-extensao>.chromiumapp.org/callback — um valor exato e fácil
@@ -60,8 +68,20 @@ function isAllowedRedirect(value) {
   return list.includes(value);
 }
 
+// Sem fallback funcional.
+//
+// Antes retornava o placeholder público quando a variável faltava. O boot já
+// recusa subir nesse caso (assertCoreBootConfig), mas defesa em camadas quer
+// dizer que a segunda camada não pode depender da primeira: se alguém remover
+// a trava de boot, importar este módulo isolado num script, ou rodar um teste,
+// o fallback voltaria a assinar tokens com um segredo que está no repositório.
+// Falhar aqui é estrutural; validar lá é política.
 function jwtSecret() {
-  return process.env.AUREX_JWT_SECRET || 'change-this-to-a-long-random-secret';
+  const secret = process.env.AUREX_JWT_SECRET;
+  if (!secret) {
+    throw new Error('AUREX_JWT_SECRET não definido — o servidor não assina nem valida tokens sem ele.');
+  }
+  return secret;
 }
 
 function googleConfigured() {

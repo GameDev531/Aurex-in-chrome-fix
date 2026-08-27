@@ -127,8 +127,10 @@ app.post('/v1/chat/completions', express.json({ limit: '25mb' }), authenticate, 
     }
     res.json(data);
   } catch (err) {
-    console.error('[Aurex Chat] Falha no proxy do modelo:', err.message);
-    res.status(502).json({ error: { message: 'Falha ao falar com o modelo: ' + err.message } });
+    // O detalhe vai para o log do operador, não para o chamador: a mensagem
+    // do upstream pode carregar host interno, caminho ou trecho de stack.
+    console.error('[Aurex Chat] Falha no proxy do modelo:', err);
+    res.status(502).json({ error: { message: 'Nao consegui falar com o modelo agora. Tente de novo em instantes.' } });
   }
 });
 
