@@ -7,7 +7,7 @@
 // mandar o agente ler o roteador ou um serviço interno e devolver o conteúdo.
 const { extractBlock, check, equal, group } = require('./harness');
 
-const src = extractBlock('popup.js', 'var AUREX_PRIVATE_HOST_SUFFIXES', 'function authorizeFetchOrigin');
+const src = extractBlock('net_guard.js', 'var AUREX_PRIVATE_HOST_SUFFIXES');
 const scope = {};
 new Function('scope', src +
   '\nscope.isPrivateNetworkHost = isPrivateNetworkHost;' +

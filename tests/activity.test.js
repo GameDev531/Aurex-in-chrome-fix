@@ -7,8 +7,8 @@
 const { extractBlock, check, equal, group } = require('./harness');
 
 const src =
-  extractBlock('popup.js', 'var ACTIVITY_KINDS', 'var AurexActivity = (function') +
-  extractBlock('popup.js', 'function activityKindFor', 'function appendToolResultToUI');
+  extractBlock('activity_log.js', 'var ACTIVITY_KINDS', 'var AurexActivity = (function') +
+  extractBlock('activity_log.js', 'function activityKindFor', 'function appendToolResultToUI');
 
 const scope = {};
 new Function('scope', src +

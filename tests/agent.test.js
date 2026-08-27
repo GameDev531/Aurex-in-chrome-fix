@@ -118,7 +118,7 @@ group('Replay resiste a deriva de seletor', () => {
 });
 
 group('Verificação pós-ação vira evidência legível', () => {
-  const src = extractBlock('popup.js', 'function buildVerificationEvidence', '// Teto de caracteres');
+  const src = extractBlock('activity_log.js', 'function buildVerificationEvidence');
   const scope = {};
   new Function('scope', src + '\nscope.build = buildVerificationEvidence;')(scope);
   const build = scope.build;

@@ -5,6 +5,6 @@
   "description": "Aurex in Chrome — extensao de navegador com agente. Testes da extensao.",
   "scripts": {
     "test": "node tests/run.js",
-    "check": "node --check popup.js && node --check background.js && node --check content.js && node --check i18n.js && node --check sandbox_client.js && node --check login.js && node --check permission_manager.js && node --check injection_guard.js && node --check workflow_recorder.js"
+    "check": "for f in *.js; do case \"$f\" in *.min.js) continue;; esac; node --check \"$f\" || exit 1; done"
   }
 }

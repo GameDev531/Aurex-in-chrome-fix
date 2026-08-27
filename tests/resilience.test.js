@@ -8,7 +8,7 @@
 const { extractBlock, check, equal, group, fakeLocalStorage } = require('./harness');
 
 function loadSearchConfig(stored) {
-  const src = extractBlock('popup.js', 'var AUREX_DEFAULT_GEMINI_MODEL', 'function getPlacesKey');
+  const src = extractBlock('web_tools.js', 'var AUREX_DEFAULT_GEMINI_MODEL', 'function getPlacesKey');
   const scope = {};
   const storage = fakeLocalStorage(stored || {});
   new Function('scope', 'localStorage', src +

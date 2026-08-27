@@ -25,7 +25,7 @@ group('Sandbox: o modelo consegue PEDIR rede', () => {
 });
 
 group('Sandbox: o campo chega ao servidor', () => {
-  const src = readSource('popup.js');
+  const src = readSource('browser_tools.js');
   const dispatch = src.slice(src.indexOf('} else if (name === "run_command")'), src.indexOf('} else if (name === "sandbox_files")'));
 
   check('run_command repassa network no spec', /network:\s*args\.network === true/.test(dispatch));

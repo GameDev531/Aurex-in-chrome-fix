@@ -503,6 +503,16 @@
   <script src="i18n.js"></script>
   <script src="sandbox_client.js"></script>
   <script src="mcp_client.js"></script>
+  <!-- Scripts clássicos num único escopo global: a ordem importa apenas para
+       o que roda no carregamento. Os módulos abaixo só DECLARAM funções e
+       constantes; quem chama é o popup.js, no DOMContentLoaded. -->
+  <script src="store_catalog.js"></script>
+  <script src="ui_motion.js"></script>
+  <script src="activity_log.js"></script>
+  <script src="docx.js"></script>
+  <script src="net_guard.js"></script>
+  <script src="web_tools.js"></script>
+  <script src="browser_tools.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
